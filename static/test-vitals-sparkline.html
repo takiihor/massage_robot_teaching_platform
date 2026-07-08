@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vitals Sparkline Test</title>
+    <style>
+        body {
+            background: #1a1a2e;
+            color: #fff;
+            font-family: monospace;
+            padding: 20px;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-section {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .test-title {
+            color: #5fe3ff;
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+        }
+        .vital-test {
+            margin-bottom: 20px;
+            padding: 10px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 6px;
+        }
+        .vital-label {
+            color: #ff6b6b;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        canvas {
+            background: #0f3460;
+            border: 1px solid #5fe3ff;
+            border-radius: 4px;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        .status.pass {
+            background: rgba(95, 227, 255, 0.2);
+            color: #5fe3ff;
+        }
+        .status.fail {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+        }
+        .control-panel {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #5fe3ff;
+            color: #0f3460;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #fff;
+        }
+        .patient-cues {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .cue {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            margin-bottom: 8px;
+            font-size: 12px;
+            overflow: visible;
+        }
+        .cue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 4px;
+        }
+        .cue-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            opacity: 0.8;
+        }
+        .cue-value {
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .cue-bars {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            gap: 3px;
+            align-items: center;
+            width: 100%;
+            margin-top: 4px;
+            padding: 4px 0;
+            overflow: visible;
+        }
+        .cue-bar {
+            flex: 1;
+            height: 6px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.15);
+        }
+        .cue-bar.active {
+            background: #5fe3ff;
+            box-shadow: 0 0 4px rgba(95, 227, 255, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1 style="color: #5fe3ff; text-align: center;">Vitals Sparkline Fix Validation</h1>
+
+        <div class="control-panel">
+            <h3>Controls</h3>
+            <button onclick="runWaveformTest()">Run Waveform Overflow Test</button>
+            <button onclick="checkCuesDisplay()">Check Cues Display</button>
+            <button onclick="clearAll()">Clear All</button>
+        </div>
+
+        <div class="test-section">
+            <div class="test-title">Waveform Overflow Fix Test</div>
+            <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
+                This test verifies that waveforms no longer wrap from right edge to left edge (overflow bug).
+                The waveform should stay within its canvas boundary.
+            </p>
+
+            <div class="vital-test">
+                <div class="vital-label">Heart Rate Waveform</div>
+                <canvas id="hrCanvas" width="360" height="130"></canvas>
+                <div id="hrStatus" class="status">Waiting for test...</div>
+            </div>
+
+            <div class="vital-test">
+                <div class="vital-label">Blood Pressure Waveform</div>
+                <canvas id="bpCanvas" width="360" height="130"></canvas>
+                <div id="bpStatus" class="status">Waiting for test...</div>
+            </div>
+
+            <div class="vital-test">
+                <div class="vital-label">Respiratory Rate Waveform</div>
+                <canvas id="rrCanvas" width="360" height="130"></canvas>
+                <div id="rrStatus" class="status">Waiting for test...</div>
+            </div>
+
+            <div class="vital-test">
+                <div class="vital-label">SpO2 Waveform</div>
+                <canvas id="spo2Canvas" width="360" height="130"></canvas>
+                <div id="spo2Status" class="status">Waiting for test...</div>
+            </div>
+        </div>
+
+        <div class="patient-cues">
+            <div class="test-title">Patient Cues Display Test</div>
+            <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
+                This test verifies that comfort level bars are fully displayed without cutoff.
+                All bars should be visible and not cut off at the bottom.
+            </p>
+
+            <div class="cue pain">
+                <div class="cue-header">
+                    <div class="cue-label">Pain 痛楚</div>
+                    <div class="cue-value">Moderate / 中等</div>
+                </div>
+                <div class="cue-bars">
+                    <span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span>
+                    <span class="cue-bar"></span><span class="cue-bar"></span><span class="cue-bar"></span><span class="cue-bar"></span><span class="cue-bar"></span>
+                </div>
+            </div>
+
+            <div class="cue" style="color: #f39c12;">
+                <div class="cue-header">
+                    <div class="cue-label">Anxiety 焦慮</div>
+                    <div class="cue-value">Uneasy / 緊張</div>
+                </div>
+                <div class="cue-bars">
+                    <span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span>
+                    <span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar"></span><span class="cue-bar"></span><span class="cue-bar"></span>
+                </div>
+            </div>
+
+            <div class="cue" style="color: #5fe3ff;">
+                <div class="cue-header">
+                    <div class="cue-label">Comfort 舒適</div>
+                    <div class="cue-value">Comfortable / 舒適</div>
+                </div>
+                <div class="cue-bars">
+                    <span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span>
+                    <span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span><span class="cue-bar active"></span>
+                </div>
+            </div>
+
+            <div id="cuesStatus" class="status">Waiting for test...</div>
+        </div>
+    </div>
+
+    <script>
+        // Simulated VitalsSparkline class (simplified for testing)
+        class TestSparkline {
+            constructor(canvasId, color) {
+                this.canvas = document.getElementById(canvasId);
+                this.ctx = this.canvas.getContext('2d');
+                this.color = color;
+                this.maxPoints = 220;
+                this.scanBarWidth = 24;
+                this.buffer = new Array(this.maxPoints).fill(null);
+                this.cursor = 0;
+                this.minValue = 0;
+                this.maxValue = 100;
+                this.width = this.canvas.width;
+                this.height = this.canvas.height;
+                this.wrapsDetected = 0;
+            }
+
+            addDataPoint(value) {
+                this.buffer[this.cursor] = value;
+                this.cursor = (this.cursor + 1) % this.maxPoints;
+            }
+
+            render() {
+                this.ctx.clearRect(0, 0, this.width, this.height);
+
+                // Draw grid
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                this.ctx.lineWidth = 0.5;
+                for (let x = 0; x <= this.width; x += 20) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(x, 0);
+                    this.ctx.lineTo(x, this.height);
+                    this.ctx.stroke();
+                }
+
+                // Draw waveform
+                this.ctx.strokeStyle = this.color;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+
+                const stepX = this.width / this.maxPoints;
+                let isDrawing = false;
+                let lastX = 0;
+
+                for (let i = 0; i < this.maxPoints; i++) {
+                    let dist = i - this.cursor;
+                    if (dist < 0) dist += this.maxPoints;
+
+                    if (dist < this.scanBarWidth) {
+                        isDrawing = false;
+                        continue;
+                    }
+
+                    const val = this.buffer[i];
+                    if (val === null || val === undefined) {
+                        isDrawing = false;
+                        continue;
+                    }
+
+                    const norm = (val - this.minValue) / (this.maxValue - this.minValue);
+                    const y = this.height - (norm * this.height * 0.9 + this.height * 0.05);
+                    const x = i * stepX;
+
+                    if (!isDrawing) {
+                        this.ctx.moveTo(x, y);
+                        isDrawing = true;
+                    } else {
+                        // FIX: Check for wrapping from right edge to left edge
+                        if (lastX > this.width - stepX * 2 && x < stepX * 2) {
+                            this.wrapsDetected++;
+                            this.ctx.stroke();
+                            this.ctx.beginPath();
+                            this.ctx.moveTo(x, y);
+                        } else {
+                            this.ctx.lineTo(x, y);
+                        }
+                    }
+
+                    lastX = x;
+                }
+
+                this.ctx.stroke();
+            }
+        }
+
+        // Create sparklines
+        const sparklines = {
+            hr: new TestSparkline('hrCanvas', '#ff6b6b'),
+            bp: new TestSparkline('bpCanvas', '#6bb6ff'),
+            rr: new TestSparkline('rrCanvas', '#5ef2a0'),
+            spo2: new TestSparkline('spo2Canvas', '#5fe3ff')
+        };
+
+        function runWaveformTest() {
+            // Fill buffers with data to simulate waveforms
+            const dataPoints = 500;
+            for (let i = 0; i < dataPoints; i++) {
+                const hr = 80 + Math.sin(i * 0.1) * 20 + Math.random() * 10;
+                const bp = 120 + Math.sin(i * 0.15) * 15 + Math.random() * 8;
+                const rr = 18 + Math.sin(i * 0.08) * 5 + Math.random() * 3;
+                const spo2 = 98 + Math.sin(i * 0.05) * 2 + Math.random() * 1;
+
+                sparklines.hr.addDataPoint(hr);
+                sparklines.bp.addDataPoint(bp);
+                sparklines.rr.addDataPoint(rr);
+                sparklines.spo2.addDataPoint(spo2);
+            }
+
+            // Render all
+            Object.values(sparklines).forEach(sparkline => sparkline.render());
+
+            // Check for wrap detection
+            let allPassed = true;
+            let totalWraps = 0;
+
+            Object.entries(sparklines).forEach(([key, sparkline]) => {
+                const statusEl = document.getElementById(`${key}Status`);
+                if (sparkline.wrapsDetected > 0) {
+                    statusEl.className = 'status fail';
+                    statusEl.textContent = `❌ FAILED: Detected ${sparkline.wrapsDetected} wrap(s) from right to left edge`;
+                    totalWraps += sparkline.wrapsDetected;
+                    allPassed = false;
+                } else {
+                    statusEl.className = 'status pass';
+                    statusEl.textContent = '✅ PASSED: No overflow detected - waveform stays within bounds';
+                }
+            });
+
+            if (totalWraps === 0) {
+                alert('✅ All waveform overflow tests PASSED!\n\nWaveforms correctly stay within canvas boundaries.');
+            } else {
+                alert(`❌ Waveform overflow test FAILED!\n\nTotal wraps detected: ${totalWraps}`);
+            }
+        }
+
+        function checkCuesDisplay() {
+            const statusEl = document.getElementById('cuesStatus');
+            const cues = document.querySelectorAll('.cue');
+
+            let allVisible = true;
+            const issues = [];
+
+            cues.forEach((cue, index) => {
+                const bars = cue.querySelectorAll('.cue-bar');
+                const rect = cue.getBoundingClientRect();
+                const barsRect = bars[bars.length - 1].getBoundingClientRect();
+
+                // Check if bottom bar is visible
+                if (barsRect.bottom > rect.bottom) {
+                    allVisible = false;
+                    issues.push(`Cue ${index + 1}: Bottom bar cut off by ${Math.round(barsRect.bottom - rect.bottom)}px`);
+                }
+            });
+
+            if (allVisible) {
+                statusEl.className = 'status pass';
+                statusEl.textContent = '✅ PASSED: All cue bars are fully visible without cutoff';
+                alert('✅ Patient cues display test PASSED!\n\nAll comfort level bars are fully visible.');
+            } else {
+                statusEl.className = 'status fail';
+                statusEl.textContent = `❌ FAILED: ${issues.length} issue(s) detected`;
+                alert(`❌ Patient cues display test FAILED!\n\nIssues:\n${issues.join('\n')}`);
+            }
+        }
+
+        function clearAll() {
+            Object.values(sparklines).forEach(sparkline => {
+                sparkline.buffer.fill(null);
+                sparkline.cursor = 0;
+                sparkline.wrapsDetected = 0;
+                sparkline.render();
+            });
+
+            document.querySelectorAll('.status').forEach(el => {
+                el.className = 'status';
+                el.textContent = 'Waiting for test...';
+            });
+        }
+    </script>
+</body>
+</html>

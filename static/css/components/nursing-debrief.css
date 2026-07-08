@@ -1,0 +1,429 @@
+/* ===== NURSING DEBRIEF PANEL =====
+ * Purpose: Timeline review and debrief UI for nursing simulation
+ * Style: Premium Dark + Glassmorphism (matching dashboard)
+ */
+
+/* ===== DEBRIEF PANEL CONTAINER ===== */
+.nursing-debrief-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(8px);
+    z-index: calc(var(--z-overlay) + 100);
+    display: none;
+    pointer-events: none;
+}
+
+.nursing-debrief-mask.open {
+    display: block;
+    pointer-events: auto;
+}
+
+.nursing-debrief-panel {
+    position: fixed;
+    top: 0;
+    right: -600px;
+    width: 600px;
+    height: 100vh;
+    background: linear-gradient(160deg, #0f172a, #1e293b);
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
+    z-index: calc(var(--z-overlay) + 110);
+    overflow-y: auto;
+    transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+}
+
+.nursing-debrief-panel.open {
+    right: 0;
+}
+
+/* ===== HEADER ===== */
+.debrief-header {
+    position: sticky;
+    top: 0;
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(12px);
+    padding: 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 10;
+}
+
+.debrief-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.debrief-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--nursing-text-1);
+}
+
+.debrief-close-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--nursing-text-2);
+    font-size: 18px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.debrief-close-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Summary Stats */
+.debrief-summary {
+    display: flex;
+    gap: 16px;
+}
+
+.debrief-stat {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 12px;
+    text-align: center;
+}
+
+.debrief-stat-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--nursing-text-3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+}
+
+.debrief-stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--nursing-text-1);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ===== CONTENT SECTIONS ===== */
+.debrief-content {
+    flex: 1;
+    padding: 24px;
+    overflow-y: auto;
+}
+
+.debrief-section {
+    margin-bottom: 32px;
+}
+
+.debrief-section:last-child {
+    margin-bottom: 0;
+}
+
+.debrief-section-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--nursing-text-1);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+}
+
+/* ===== EMPTY STATE ===== */
+.debrief-empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--nursing-text-3);
+}
+
+.empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.empty-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--nursing-text-2);
+    margin-bottom: 8px;
+}
+
+.empty-desc {
+    font-size: 14px;
+    color: var(--nursing-text-3);
+}
+
+/* ===== TIMELINE EVENTS ===== */
+.debrief-timeline-container {
+    position: relative;
+}
+
+.debrief-event-item {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    position: relative;
+}
+
+.debrief-event-item:last-child {
+    margin-bottom: 0;
+}
+
+/* Vertical timeline line */
+.debrief-event-item::before {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 44px;
+    bottom: -20px;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+}
+
+.debrief-event-item:last-child::before {
+    display: none;
+}
+
+.event-marker {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
+}
+
+.event-icon {
+    font-size: 18px;
+}
+
+.event-content {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 12px 16px;
+}
+
+.event-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.event-type-label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--nursing-text-1);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.event-time {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--nursing-text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.event-details {
+    font-size: 14px;
+    color: var(--nursing-text-2);
+    line-height: 1.5;
+}
+
+.event-details strong {
+    color: var(--nursing-text-1);
+}
+
+.event-details em {
+    color: var(--nursing-text-3);
+    font-style: italic;
+}
+
+/* ===== SNAPSHOT VIEWER ===== */
+.snapshot-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.snapshot-card:last-child {
+    margin-bottom: 0;
+}
+
+.snapshot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.snapshot-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--nursing-text-1);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.snapshot-time {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--nursing-text-3);
+}
+
+.snapshot-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.snapshot-vitals {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+}
+
+.snapshot-vital {
+    font-size: 13px;
+    color: var(--nursing-text-2);
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+}
+
+.snapshot-vital strong {
+    color: var(--nursing-text-1);
+    font-weight: 700;
+}
+
+.snapshot-cues {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.snapshot-cue {
+    font-size: 13px;
+    color: var(--nursing-text-2);
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+}
+
+.snapshot-cue strong {
+    color: var(--nursing-text-1);
+    font-weight: 700;
+}
+
+.snapshot-state {
+    font-size: 13px;
+    color: var(--nursing-text-2);
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+}
+
+.snapshot-state strong {
+    color: var(--nursing-text-1);
+    font-weight: 700;
+}
+
+.snapshot-no-data {
+    font-size: 13px;
+    color: var(--nursing-text-3);
+    font-style: italic;
+    text-align: center;
+    padding: 12px;
+}
+
+/* ===== ACTION BUTTONS ===== */
+.debrief-actions {
+    position: sticky;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(12px);
+    padding: 16px 24px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    gap: 12px;
+}
+
+.debrief-action-btn {
+    flex: 1;
+    padding: 12px 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: var(--nursing-text-1);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.debrief-action-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.debrief-action-btn:active {
+    transform: scale(0.96);
+}
+
+.debrief-action-btn.danger {
+    background: rgba(255, 77, 77, 0.1);
+    border-color: rgba(255, 77, 77, 0.3);
+    color: #ff4d4d;
+}
+
+.debrief-action-btn.danger:hover {
+    background: rgba(255, 77, 77, 0.2);
+    border-color: rgba(255, 77, 77, 0.5);
+}
+
+/* ===== SCROLLBAR STYLING ===== */
+.nursing-debrief-panel::-webkit-scrollbar {
+    width: 8px;
+}
+
+.nursing-debrief-panel::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.nursing-debrief-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+.nursing-debrief-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+    .nursing-debrief-panel {
+        width: 100vw;
+        right: -100vw;
+    }
+
+    .debrief-actions {
+        flex-direction: column;
+    }
+}

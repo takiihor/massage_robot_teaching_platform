@@ -1,0 +1,2517 @@
+/* =========================================================
+   Dark Medical Monitor Theme (ICU Style)
+   ========================================================= */
+:root {
+  /* Backgrounds - Dark Monitor Style */
+  --monitor-bg: #0B0F14;
+  --monitor-card-bg: #151B26;
+  --monitor-card-border: #2D3A4D;
+  --monitor-glass-bg: rgba(17, 24, 39, 0.85);
+  --monitor-glass-border: rgba(255, 255, 255, 0.08);
+
+  /* Glassmorphism */
+  --monitor-glass-blur: 8px;
+  --monitor-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  --monitor-inner-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  /* Typography */
+  --monitor-text-1: #F5F7FA;
+  --monitor-text-2: #B8C5D3;
+  --monitor-text-3: #8A9AAC;
+
+  /* Interactive surfaces */
+  --monitor-interactive-hover: #222C3A;
+  --monitor-interactive-active: #2C394A;
+
+  /* Metric Colors - Unified Cyan */
+  --monitor-color-hr: #6FE7F7;
+  --monitor-color-bp: #6FE7F7;
+  --monitor-color-rr: #6FE7F7;
+  --monitor-color-spo2: #6FE7F7;
+
+  /* Status colors */
+  --monitor-color-warning: #FF9F43;
+  --monitor-color-success: #2ECC71;
+  --monitor-color-info: #54A0FF;
+
+  /* Waveform Colors */
+  --monitor-wave-hr: #6FE7F7;
+  --monitor-wave-bp: #6FE7F7;
+  --monitor-wave-rr: #6FE7F7;
+  --monitor-wave-spo2: #6FE7F7;
+
+  /* Glow - subtle */
+  --monitor-glow: 0 0 8px rgba(34, 211, 238, 0.15);
+
+  /* Year65 extras */
+  --y65-radius-lg: 14px;
+  --y65-radius-md: 12px;
+  --y65-radius-sm: 10px;
+  --y65-gap: 12px;
+  --y65-z-base: 1;
+  --y65-z-dashboard: 100;
+  --y65-z-drawer: 900;
+  --y65-z-modal: 1200;
+  --y65-font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+  --y65-font-display: "Outfit", "Noto Sans TC", "Segoe UI", sans-serif;
+  --y65-font-mono: "JetBrains Mono", "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  --y65-motion-fast: 140ms ease;
+  --y65-motion-base: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  --y65-motion-slow: 360ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --y65-control-min-h: 44px;
+
+  /* Derived */
+  --y65-btn-bg: var(--monitor-glass-bg);
+  --y65-btn-border: var(--monitor-glass-border);
+  --y65-card-bg: var(--monitor-card-bg);
+  --y65-card-border: var(--monitor-card-border);
+  --y65-mask-bg: rgba(0, 0, 0, 0.6);
+}
+
+/* =========================================================
+   Base / Reset (scoped to Year65 app)
+========================================================= */
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--y65-font-body);
+  background: var(--monitor-bg);
+  color: var(--monitor-text-1);
+  overflow: hidden;
+}
+
+#year65App,
+#year65App * {
+  box-sizing: border-box;
+}
+
+/* =========================================================
+   App Layout (Gemini-like)
+========================================================= */
+#year65App {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  font-family: var(--y65-font-body);
+  color: var(--nursing-text-1);
+}
+
+#year65App .y65-bg {
+  position: absolute;
+  inset: 0;
+  background: var(--monitor-bg);
+  z-index: var(--y65-z-base);
+}
+
+#year65App .y65-topbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: calc(var(--y65-z-dashboard) + 1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+
+#year65App .y65-topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+#year65App .y65-topbar .status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  min-height: 34px;
+  border-radius: 999px;
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+  color: var(--monitor-text-2);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+}
+
+#year65App .y65-topbar .status-badge strong {
+  color: var(--monitor-text-1);
+  font-weight: 600;
+}
+
+#year65App .y65-topbar .status-badge.expression {
+  gap: 8px;
+}
+
+#year65App .y65-topbar #y65ExpressionPresetText {
+  color: var(--monitor-text-2);
+  font-weight: 500;
+}
+
+#year65App .y65-topbar .status-dot {
+  background: var(--monitor-color-rr);
+  box-shadow: 0 0 6px var(--monitor-color-rr);
+}
+
+#year65App .y65-topbar .y65-robot-dot {
+  background: #94a3b8;
+  box-shadow: 0 0 6px rgba(148, 163, 184, 0.6);
+}
+
+#year65App .y65-topbar .y65-robot-dot.ok {
+  background: #2ecc71;
+  box-shadow: 0 0 6px rgba(46, 204, 113, 0.7);
+}
+
+#year65App .y65-topbar .y65-robot-dot.paused {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+}
+
+#year65App .y65-topbar .y65-robot-dot.error {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+}
+
+#year65App .y65-topbar .y65-status-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+  font-size: 12px;
+  color: var(--monitor-text-2);
+}
+
+#year65App .y65-status-pill strong {
+  color: var(--monitor-text-1);
+  font-weight: 700;
+  font-family: var(--y65-font-display);
+  letter-spacing: 0.5px;
+}
+
+#year65App .y65-status-gap {
+  margin-left: 10px;
+}
+
+#year65App .y65-system-status {
+  position: relative;
+}
+
+#year65App .y65-system-status-summary {
+  list-style: none;
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--monitor-card-border);
+  background: var(--monitor-card-bg);
+  color: var(--monitor-text-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.25px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#year65App .y65-system-status-summary::-webkit-details-marker {
+  display: none;
+}
+
+#year65App .y65-system-status[open] .y65-system-status-summary {
+  border-color: rgba(111, 231, 247, 0.45);
+  color: var(--monitor-text-1);
+}
+
+#year65App .y65-system-status-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--monitor-card-border);
+  background: rgba(21, 27, 38, 0.96);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  z-index: calc(var(--y65-z-dashboard) + 3);
+}
+
+#year65App .y65-status-pill .y65-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--monitor-color-rr);
+  box-shadow: 0 0 8px var(--monitor-color-rr);
+}
+
+#year65App .y65-topbar .y65-instructor-entry {
+  pointer-events: auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.14)),
+    var(--nursing-glass-bg);
+  border: 1px solid var(--nursing-glass-border);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0.55;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: var(--nursing-shadow-1);
+}
+
+#year65App .y65-instructor-entry:hover {
+  opacity: 0.85;
+}
+
+#year65App .y65-instructor-entry:active {
+  transform: scale(0.96);
+}
+
+#year65App .y65-dashboard {
+  position: absolute;
+  inset: 0;
+  z-index: var(--y65-z-dashboard);
+  display: grid;
+  grid-template-columns: minmax(280px, 22vw) minmax(420px, 1fr) minmax(250px, 19vw);
+  grid-template-rows: 1fr 84px;
+  gap: clamp(12px, 1.2vw, 18px);
+  padding: clamp(12px, 1.4vw, 20px);
+  padding-top: 70px;
+  pointer-events: none;
+}
+
+/* Shared glass card - Dark Monitor Style */
+#year65App .y65-glass {
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+  border-radius: var(--y65-radius-md);
+  box-shadow: var(--monitor-shadow);
+  pointer-events: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1;
+}
+
+/* =========================================================
+   Left: Vitals + Cues (Dark Monitor Style)
+   ========================================================= */
+#year65App .y65-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+#year65App .y65-vital {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  min-height: 88px;
+  border-radius: var(--y65-radius-md);
+  position: relative;
+  overflow: hidden;
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+  box-shadow: var(--monitor-shadow);
+}
+
+#year65App .y65-vital::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: currentColor;
+}
+
+#year65App .y65-vital-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  font-size: 16px;
+  color: currentColor;
+}
+
+#year65App .y65-vital-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 110px;
+}
+
+#year65App .y65-vital-meta .y65-trend-indicator {
+  margin-top: 2px;
+  font-size: 11px;
+  letter-spacing: 0.2px;
+}
+
+#year65App .y65-vital-label {
+  font-size: 12px;
+  color: var(--monitor-text-3);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+#year65App .y65-vital-value {
+  font-size: 26px;
+  font-weight: 700;
+  font-family: var(--y65-font-display);
+  letter-spacing: 0.2px;
+  font-variant-numeric: tabular-nums;
+  color: var(--monitor-text-1);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+#year65App .y65-vital-unit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--monitor-text-3);
+}
+
+#year65App .y65-vital-trend {
+  position: relative;
+  right: auto;
+  margin-left: auto;
+  width: min(100%, 320px);
+  height: 130px;
+  opacity: 0.85;
+  filter: none;
+}
+
+#year65App .y65-vital-trend .sparkline-line {
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Vital Colors */
+#year65App .y65-vital.hr {
+  color: var(--monitor-color-hr);
+}
+#year65App .y65-vital.hr::before {
+  background: currentColor;
+}
+#year65App .y65-vital.hr .y65-vital-value {
+  color: #ff6b6b;
+}
+#year65App .y65-vital.hr .sparkline-line {
+  stroke: var(--monitor-wave-hr);
+}
+
+#year65App .y65-vital.bp {
+  color: var(--monitor-color-bp);
+}
+#year65App .y65-vital.bp::before {
+  background: currentColor;
+}
+#year65App .y65-vital.bp .y65-vital-value {
+  color: #6bb6ff;
+}
+#year65App .y65-vital.bp .sparkline-line {
+  stroke: var(--monitor-wave-bp);
+}
+
+#year65App .y65-vital.rr {
+  color: var(--monitor-color-rr);
+}
+#year65App .y65-vital.rr::before {
+  background: currentColor;
+}
+#year65App .y65-vital.rr .y65-vital-value {
+  color: #5ef2a0;
+}
+#year65App .y65-vital.rr .sparkline-line {
+  stroke: var(--monitor-wave-rr);
+}
+
+#year65App .y65-vital.spo2 {
+  color: var(--monitor-color-spo2);
+}
+#year65App .y65-vital.spo2::before {
+  background: currentColor;
+}
+#year65App .y65-vital.spo2 .y65-vital-value {
+  color: #5fe3ff;
+}
+#year65App .y65-vital.spo2 .sparkline-line {
+  stroke: var(--monitor-wave-spo2);
+}
+
+#year65App .y65-cues {
+  margin-top: auto;
+  padding: 12px;
+  padding-bottom: 14px;
+  border-radius: var(--y65-radius-md);
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+  overflow: visible;
+}
+
+#year65App .y65-cues-title {
+  font-size: 0.75rem;
+  color: var(--monitor-text-3);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+#year65App .y65-cue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--monitor-text-2);
+  font-weight: 500;
+  overflow: visible;
+}
+
+#year65App .y65-cue:last-child {
+  margin-bottom: 0;
+}
+
+/* Align label and value on the same line */
+#year65App .y65-cue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+#year65App .y65-cue-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--monitor-text-2);
+  margin: 0;
+  opacity: 0.8;
+}
+
+#year65App .y65-cue-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--monitor-text-1);
+  margin: 0;
+}
+
+#year65App .y65-cue-bars {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 3px;
+  align-items: center;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 0;
+  overflow: visible;
+}
+
+#year65App .y65-cue-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+#year65App .y65-cue-bar.active {
+  background: currentColor;
+  box-shadow: 0 0 4px color-mix(in srgb, currentColor 50%, transparent);
+  transform: scaleY(1.08);
+}
+
+/* Cue colors - reference style */
+#year65App .y65-cue.pain {
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.2), rgba(255, 107, 107, 0.08));
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ff6b6b;
+}
+
+#year65App .y65-cue.anxiety {
+  background: linear-gradient(135deg, rgba(243, 156, 18, 0.2), rgba(243, 156, 18, 0.08));
+  border-color: rgba(243, 156, 18, 0.5);
+  color: #f39c12;
+}
+
+#year65App .y65-cue.comfort {
+  background: linear-gradient(135deg, rgba(94, 242, 160, 0.2), rgba(94, 242, 160, 0.08));
+  border-color: rgba(94, 242, 160, 0.5);
+  color: #5ef2a0;
+}
+
+/* =========================================================
+   Center: Patient display (Dark Monitor Style)
+   ========================================================= */
+#year65App .y65-center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 4px 4px;
+  min-height: 0;
+  pointer-events: auto;
+}
+
+#year65App .y65-patient-state {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--monitor-text-1);
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+}
+
+#year65App .y65-patient-state span {
+  color: var(--monitor-color-rr);
+  font-weight: 700;
+}
+
+#year65App .y65-avatar-stage {
+  width: min(760px, 100%);
+  height: min(860px, calc(100% - 10px));
+  max-height: calc(100vh - 200px);
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  margin-top: 30px;
+}
+
+#year65App .y65-avatar-stage::before,
+#year65App .y65-avatar-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 280ms ease;
+}
+
+#year65App .y65-avatar-stage::before {
+  background: radial-gradient(circle at 50% 45%, rgba(94, 242, 160, 0.25), transparent 60%);
+}
+
+#year65App .y65-avatar-stage::after {
+  background: radial-gradient(circle at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.35) 100%);
+  opacity: 0.08;
+}
+
+#year65App .y65-avatar-stage.y65-stage-calm::before {
+  opacity: 0.18;
+}
+
+#year65App .y65-avatar-stage.y65-stage-stress::before {
+  opacity: 0.28;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 159, 67, 0.32), transparent 62%);
+}
+
+#year65App .y65-avatar-stage.y65-stage-critical::before {
+  opacity: 0.36;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 107, 0.4), transparent 62%);
+}
+
+#year65App .y65-avatar-placeholder {
+  width: 78%;
+  height: 82%;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 16px;
+  color: var(--nursing-text-2);
+  font-weight: 700;
+  line-height: 1.4;
+  user-select: none;
+}
+
+#year65App .y65-avatar-placeholder-icon {
+  font-size: 54px;
+  opacity: 0.9;
+}
+
+#year65App .y65-avatar-placeholder-text {
+  margin-top: 10px;
+}
+
+#year65App .y65-is-hidden {
+  display: none;
+}
+
+/* =========================================================
+   Avatar Layer (PNG stack) - Nursing training cues
+========================================================= */
+#year65App .y65-avatar-stack {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+#year65App .y65-avatar-figure {
+  position: relative;
+  width: 96%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  transform-origin: 50% 65%;
+  filter:
+    drop-shadow(0 24px 36px rgba(0, 0, 0, 0.58))
+    drop-shadow(0 8px 12px rgba(0, 0, 0, 0.35));
+  --y65-face-x: 50%;
+  --y65-face-y: 17.5%;
+  --y65-face-w: 52%;
+  --y65-face-h: 35%;
+  --y65-breath-shift: 2px;
+  --y65-breath-scale: 1.012;
+  --y65-heart-dur: 1.2s;
+  --y65-glow-opacity: 0.95;
+  --y65-tremor-dur: 240ms;
+}
+
+#year65App .y65-avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: auto;
+  opacity: 1;
+  filter: contrast(1.24) saturate(1.24) brightness(1.01);
+  transform: translateZ(0);
+  will-change: filter, transform;
+  transition: opacity 220ms ease, filter 220ms ease;
+}
+
+#year65App .y65-avatar-figure.swap .y65-avatar-img {
+  opacity: 0.99;
+  filter: contrast(1.2) saturate(1.18) brightness(1.01);
+}
+
+#year65App .y65-avatar-face {
+  position: absolute;
+  left: var(--y65-face-x);
+  top: var(--y65-face-y);
+  width: var(--y65-face-w);
+  height: var(--y65-face-h);
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  opacity: 1;
+  z-index: 2;
+  filter: contrast(1.16) saturate(1.16);
+}
+
+#year65App .y65-avatar-face.state-relief {
+  filter: brightness(1.08) saturate(1.08) hue-rotate(6deg);
+  transition: filter 400ms ease;
+}
+
+#year65App .y65-avatar-face.state-severe-distress {
+  filter: brightness(0.9) saturate(0.95) contrast(1.05);
+  transition: filter 400ms ease;
+}
+
+/* Overlay effects */
+#year65App .y65-avatar-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+/* Sweat placement */
+#year65App .y65-sweat {
+  position: absolute;
+  left: 50%;
+  top: 10.8%;
+  width: 36%;
+  height: 18%;
+  transform: translate(-50%, 0);
+  object-fit: contain;
+  opacity: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 6px 10px rgba(0,0,0,0.25));
+}
+
+#year65App .y65-sweat.drip {
+  animation: y65SweatDrip var(--y65-sweat-dur, 6.8s) linear infinite;
+}
+
+@keyframes y65SweatDrip {
+  0% { transform: translate(-50%, 0); opacity: var(--y65-sweat-op, 0.2); }
+  70% { transform: translate(-50%, 16%); opacity: calc(var(--y65-sweat-op, 0.2) * 0.95); }
+  100% { transform: translate(-50%, 22%); opacity: 0; }
+}
+
+/* Breathing animation */
+#year65App .y65-avatar-figure.breathing {
+  animation: y65Breath var(--y65-breath-dur, 3.8s) ease-in-out infinite;
+}
+
+@keyframes y65Breath {
+  0%   { transform: translateY(0px) scale(1.000); }
+  50%  { transform: translateY(calc(var(--y65-breath-shift) * -1)) scale(var(--y65-breath-scale)); }
+  100% { transform: translateY(0px) scale(1.000); }
+}
+
+/* Tremor animation */
+#year65App .y65-avatar-figure.tremor {
+  animation: y65Tremor var(--y65-tremor-dur, 480ms) ease-in-out infinite;
+}
+
+@keyframes y65Tremor {
+  0%   { transform: translate(0px, 0px) rotate(0deg); }
+  25%  { transform: translate(0.06px, -0.04px) rotate(-0.01deg); }
+  50%  { transform: translate(-0.05px, 0.06px) rotate(0.01deg); }
+  75%  { transform: translate(0.04px, 0.03px) rotate(-0.01deg); }
+  100% { transform: translate(0px, 0px) rotate(0deg); }
+}
+
+/* Fallback label */
+#year65App .y65-avatar-fallback {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: var(--nursing-text-2);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  text-align: center;
+  width: min(90%, 300px);
+  opacity: 0.0;
+  transition: opacity 180ms ease;
+}
+
+#year65App .y65-avatar-stage.missing-assets .y65-avatar-fallback {
+  opacity: 1;
+}
+
+/* Chest glow / ripple */
+#year65App .y65-chest-glow,
+#year65App .y65-chest-ring {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+#year65App .y65-chest-glow {
+  width: 100px;
+  height: 100px;
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--nursing-color-hr) 65%, transparent) 0%,
+    color-mix(in srgb, var(--nursing-color-hr) 40%, transparent) 35%,
+    transparent 70%);
+  filter: blur(6px);
+  animation: y65Heartbeat var(--y65-heart-dur, 1.2s) infinite ease-in-out;
+  opacity: var(--y65-glow-opacity, 0.95);
+}
+
+#year65App .y65-chest-ring {
+  width: 120px;
+  height: 120px;
+  border: 4px solid color-mix(in srgb, var(--nursing-color-hr) 55%, transparent);
+  box-shadow:
+    0 0 24px color-mix(in srgb, var(--nursing-color-hr) 40%, transparent),
+    inset 0 0 20px color-mix(in srgb, var(--nursing-color-hr) 22%, transparent);
+  animation: y65Ring var(--y65-heart-dur, 1.2s) infinite ease-out;
+}
+
+@keyframes y65Heartbeat {
+  0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0.6; }
+  40% { transform: translate(-50%, -50%) scale(1.25); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(0.85); opacity: 0.6; }
+}
+
+@keyframes y65Ring {
+  0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.95; }
+  50% { transform: translate(-50%, -50%) scale(1.6); opacity: 0.5; }
+  100% { transform: translate(-50%, -50%) scale(2.8); opacity: 0; }
+}
+
+/* =========================================================
+   Right: Student quick card (Dark Monitor Style)
+   ========================================================= */
+#year65App .y65-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+#year65App .y65-wakeword-hint {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--monitor-text-2);
+  letter-spacing: 0.2px;
+  margin-bottom: 4px;
+  opacity: 0.85;
+}
+
+#year65App .y65-right-card {
+  padding: 12px;
+  border-radius: var(--y65-radius-md);
+  background: var(--monitor-card-bg);
+  border: 1px solid var(--monitor-card-border);
+}
+
+#year65App .y65-right-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--monitor-text-3);
+  margin-bottom: 8px;
+}
+
+#year65App .y65-right-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--monitor-text-2);
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+#year65App .y65-right-row:last-child {
+  margin-bottom: 0;
+}
+
+#year65App .y65-badge {
+  font-weight: 600;
+  color: var(--monitor-text-1);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+
+#year65App .y65-normal-stop-btn {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 10px;
+  border: 1px solid rgba(255, 107, 107, 0.68);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 107, 107, 0.92), rgba(192, 38, 48, 0.92));
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: 0 10px 24px rgba(192, 38, 48, 0.26), inset 0 1px 0 rgba(255,255,255,0.18);
+  transition: transform 0.12s ease, filter 0.12s ease, opacity 0.12s ease;
+}
+
+#year65App .y65-normal-stop-btn[hidden] {
+  display: none !important;
+}
+
+#year65App .y65-normal-stop-btn:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+#year65App .y65-normal-stop-btn:active {
+  transform: scale(0.98);
+}
+
+#year65App .y65-normal-stop-btn:disabled {
+  cursor: wait;
+  opacity: 0.72;
+  transform: none;
+}
+
+/* =========================================================
+   Bottom: actions (Student)
+========================================================= */
+#year65App .y65-bottom {
+  grid-column: 1 / span 3;
+  display: flex;
+  gap: 16px;
+  pointer-events: auto;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0 6px 6px;
+}
+
+#year65App .y65-bottom .y65-btn {
+  height: 66px;
+  min-width: 220px;
+  max-width: 420px;
+  flex: 1 1 0;
+}
+
+#year65App .y65-btn {
+  flex: 1;
+  border: 1px solid var(--nursing-glass-border);
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.14)),
+    var(--nursing-glass-bg);
+  color: var(--nursing-text-1);
+  border-radius: 16px;
+  cursor: pointer;
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.3px;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: var(--nursing-shadow-1), inset 0 1px 0 var(--nursing-glass-highlight);
+}
+
+#year65App .y65-btn:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--nursing-glass-border) 95%, transparent);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--nursing-glass-highlight);
+}
+
+#year65App .y65-btn:active {
+  transform: scale(0.98);
+}
+
+#year65App .y65-btn-stop {
+  flex: 1.1;
+  border: 1px solid rgba(255, 107, 107, 0.6);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 107, 107, 0.25),
+      rgba(255, 107, 107, 0.15)
+    );
+  box-shadow: 0 0 24px rgba(255, 107, 107, 0.4), var(--nursing-shadow-1);
+  font-size: 17px;
+  font-weight: 1000;
+  color: #fff;
+}
+
+#year65App .y65-btn-stop:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 107, 107, 0.75);
+  box-shadow: 0 0 32px rgba(255, 107, 107, 0.5), 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* =========================================================
+   Student Massage Setup Drawer (right side)
+========================================================= */
+#year65App .y65-student-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  z-index: var(--y65-z-drawer);
+  display: none;
+  pointer-events: none;
+}
+
+#year65App .y65-student-mask.open {
+  display: block;
+  pointer-events: auto;
+}
+
+#year65App .y65-student-drawer {
+  position: fixed;
+  top: 0;
+  right: -480px;
+  width: 480px;
+  height: 100vh;
+  z-index: calc(var(--y65-z-drawer) + 1);
+  transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.12)),
+    rgba(66, 72, 82, 0.62);
+  border-left: 1px solid var(--nursing-glass-border);
+  box-shadow: -10px 0 40px rgba(0,0,0,0.45);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* Fix blurry text in glass drawer */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1;
+  font-weight: 400;
+}
+
+#year65App .y65-student-drawer.open {
+  right: 0;
+}
+
+#year65App .y65-drawer-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 16px 20px 10px;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.14)),
+    rgba(66, 72, 82, 0.7);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  border-bottom: 1px solid var(--nursing-glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#year65App .y65-drawer-title {
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: 0.6px;
+  color: var(--nursing-text-1);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#year65App .y65-drawer-title .y65-mini-tag {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--nursing-text-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--nursing-glass-border);
+}
+
+#year65App .y65-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.14)),
+    var(--nursing-glass-bg);
+  border: 1px solid var(--nursing-glass-border);
+  color: var(--nursing-text-2);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  box-shadow: inset 0 1px 0 var(--nursing-glass-highlight);
+}
+
+#year65App .y65-icon-btn:hover {
+  background: color-mix(in srgb, var(--nursing-glass-bg) 80%, transparent);
+  border-color: color-mix(in srgb, var(--nursing-glass-border) 85%, transparent);
+}
+
+#year65App .y65-icon-btn:active {
+  transform: scale(0.96);
+}
+
+#year65App .y65-drawer-body {
+  padding: 16px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: visible;
+}
+
+#year65App .y65-panel {
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(calc(var(--nursing-glass-blur) - 2px)) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(var(--nursing-glass-blur) - 2px)) saturate(150%);
+}
+
+#year65App .y65-panel-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--nursing-text-2);
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#year65App .y65-label-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+}
+
+#year65App .y65-label-primary {
+  color: var(--nursing-text-1);
+  font-weight: 500;
+}
+
+#year65App .y65-label-secondary {
+  color: var(--nursing-text-2);
+  font-weight: 400;
+  font-size: 15px;
+  letter-spacing: 0.2px;
+}
+
+/* Mode buttons (4) */
+#year65App .y65-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#year65App .y65-mode-btn {
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--nursing-glass-border) 75%, transparent);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 55%, transparent);
+  color: var(--nursing-text-2);
+  cursor: pointer;
+  text-align: center;
+  user-select: none;
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 82px;
+}
+
+#year65App .y65-mode-btn .y65-mode-icon {
+  font-size: 16px;
+  opacity: 0.9;
+}
+
+#year65App .y65-mode-btn .y65-mode-text {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--nursing-text-1);
+  opacity: 0.85;
+}
+
+#year65App .y65-mode-btn .y65-label-primary {
+  font-size: 15px;
+}
+
+#year65App .y65-mode-btn .y65-label-secondary {
+  font-size: 13px;
+}
+
+#year65App .y65-mode-btn .y65-mode-num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--nursing-color-spo2);
+  opacity: 0.9;
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#year65App .y65-mode-btn:hover {
+  border-color: color-mix(in srgb, var(--nursing-glass-border) 95%, transparent);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 70%, transparent);
+  transform: translateY(-1px);
+}
+
+#year65App .y65-mode-btn.active {
+  background: color-mix(in srgb, var(--nursing-glass-bg) 85%, transparent);
+  border-color: color-mix(in srgb, var(--nursing-color-spo2) 50%, var(--nursing-glass-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nursing-color-spo2) 15%, transparent);
+  color: var(--nursing-text-1);
+}
+
+#year65App .y65-mode-btn.active .y65-mode-text {
+  opacity: 1;
+}
+
+/* Segmented control (intensity) */
+#year65App .y65-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--nursing-glass-border) 75%, transparent);
+  background: color-mix(in srgb, var(--nursing-bg-0) 30%, transparent);
+}
+
+#year65App .y65-seg button {
+  padding: 10px 10px;
+  border: none;
+  background: transparent;
+  color: var(--nursing-text-2);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+#year65App .y65-seg button:hover {
+  background: color-mix(in srgb, var(--nursing-glass-bg) 60%, transparent);
+}
+
+#year65App .y65-seg button.active {
+  background: color-mix(in srgb, var(--nursing-glass-bg) 85%, transparent);
+  color: var(--nursing-text-1);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--nursing-color-spo2) 40%, transparent);
+}
+
+/* Duration buttons */
+#year65App .y65-duration-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+#year65App .y65-chip {
+  padding: 10px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--nursing-glass-border) 75%, transparent);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 55%, transparent);
+  color: var(--nursing-text-2);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 18px;
+  text-align: center;
+  user-select: none;
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+#year65App .y65-chip:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--nursing-glass-border) 95%, transparent);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 70%, transparent);
+}
+
+#year65App .y65-chip.active {
+  background: color-mix(in srgb, var(--nursing-color-spo2) 16%, var(--nursing-glass-bg));
+  border-color: color-mix(in srgb, var(--nursing-color-spo2) 45%, var(--nursing-glass-border));
+  color: var(--nursing-text-1);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--nursing-color-spo2) 16%, transparent);
+}
+
+/* Start button */
+#year65App .y65-start-btn {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--nursing-color-rr) 45%, var(--nursing-glass-border));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--nursing-color-rr) 18%, transparent),
+      color-mix(in srgb, var(--nursing-color-rr) 10%, transparent)
+    );
+  color: var(--nursing-text-1);
+  font-weight: 500;
+  font-size: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--nursing-color-rr) 14%, transparent);
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+#year65App .y65-start-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--nursing-color-rr) 60%, var(--nursing-glass-border));
+}
+
+#year65App .y65-start-btn:active {
+  transform: scale(0.98);
+}
+
+#year65App .y65-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Checkbox */
+#year65App .y65-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--nursing-text-2);
+  font-weight: 400;
+  font-size: 17px;
+}
+
+#year65App .y65-check input {
+  display:none;
+}
+
+#year65App .y65-check .y65-box {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--nursing-glass-border) 80%, transparent);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 55%, transparent);
+  display: grid;
+  place-items: center;
+  color: var(--nursing-text-1);
+  font-size: 12px;
+}
+
+#year65App .y65-check.checked .y65-box {
+  background: color-mix(in srgb, var(--nursing-color-spo2) 16%, var(--nursing-glass-bg));
+  border-color: color-mix(in srgb, var(--nursing-color-spo2) 45%, var(--nursing-glass-border));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--nursing-color-spo2) 16%, transparent);
+}
+
+/* Student drawer "collapsed handle" */
+#year65App .y65-student-handle {
+  position: relative;
+  right: auto;
+  top: auto;
+  z-index: auto;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0,0,0,0.14)),
+    var(--nursing-glass-bg);
+  border: 1px solid var(--nursing-glass-border);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.95;
+  box-shadow: var(--nursing-shadow-1);
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+#year65App .y65-student-handle-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#year65App .y65-student-handle-chevron {
+  opacity: 0.75;
+  font-weight: 900;
+}
+
+#year65App .y65-drawer-tools {
+  display: flex;
+  gap: 10px;
+}
+
+#year65App .y65-student-handle .y65-handle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nursing-color-rr);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--nursing-color-rr) 28%, transparent);
+}
+
+#year65App .y65-student-handle .y65-handle-text {
+  font-weight: 900;
+  font-size: 14px;
+  color: var(--nursing-text-2);
+  letter-spacing: 0.3px;
+}
+
+#year65App .y65-student-handle.visible {
+  display: inline-flex;
+}
+
+#year65App button:focus-visible,
+#year65App [role="button"]:focus-visible,
+#year65App summary:focus-visible,
+#year65App input:focus-visible,
+#year65App select:focus-visible,
+#year65App textarea:focus-visible,
+#year65App .y65-student-handle:focus-visible,
+#year65App ~ .teaching-overlay button:focus-visible,
+#year65App ~ .settings-panel button:focus-visible,
+#year65App ~ .settings-panel input:focus-visible,
+#year65App ~ .settings-panel select:focus-visible {
+  outline: 2px solid rgba(95, 227, 255, 0.7);
+  outline-offset: 2px;
+}
+/* =========================================================
+   Instructor Drawer (locked initially)
+========================================================= */
+#year65App .y65-instructor-mask {
+  position: fixed;
+  inset: 0;
+  background: var(--y65-mask-bg);
+  backdrop-filter: blur(8px);
+  z-index: var(--y65-z-drawer);
+  display: none;
+  pointer-events: none;
+}
+
+#year65App .y65-instructor-mask.open {
+  display: block;
+  pointer-events: auto;
+}
+
+#year65App .y65-instructor-drawer {
+  position: fixed;
+  top: 0;
+  right: -420px;
+  width: 420px;
+  height: 100vh;
+  z-index: calc(var(--y65-z-drawer) + 1);
+  transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.12)),
+    rgba(66, 72, 82, 0.62);
+  border-left: 1px solid var(--nursing-glass-border);
+  box-shadow: -10px 0 40px rgba(0,0,0,0.45);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  color: var(--nursing-text-1);
+}
+
+#year65App .y65-instructor-drawer.open {
+  right: 0;
+}
+
+/* Instructor content styles */
+#year65App .y65-i-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--nursing-text-2);
+  letter-spacing: 0;
+  text-transform: none;
+  margin: 8px 0 10px;
+}
+
+#year65App .y65-instructor-drawer .y65-drawer-title {
+  color: var(--nursing-text-1);
+  letter-spacing: 0;
+}
+
+#year65App .y65-instructor-drawer .y65-drawer-title span {
+  font-weight: 700;
+}
+
+#year65App .y65-instructor-drawer .y65-mini-tag {
+  color: var(--nursing-text-2);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+#year65App .y65-instructor-drawer .y65-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--nursing-text-2);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#year65App .y65-i-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#year65App .y65-i-btn {
+  border-radius: 14px;
+  border: 1px solid var(--nursing-glass-border);
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.14)),
+    rgba(66, 72, 82, 0.6);
+  color: var(--nursing-text-1);
+  padding: 12px 10px;
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  text-align: center;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+#year65App .y65-i-btn:hover {
+  border-color: color-mix(in srgb, var(--nursing-glass-border) 90%, transparent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#year65App .y65-i-btn.active {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: color-mix(in srgb, var(--nursing-color-spo2) 50%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nursing-color-spo2) 15%, transparent);
+}
+
+#year65App .y65-i-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+#year65App .y65-i-slider label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--nursing-text-2);
+  font-weight: 600;
+}
+
+#year65App .y65-i-slider label strong {
+  color: var(--nursing-text-1);
+  font-weight: 700;
+}
+
+#year65App .y65-i-slider input[type="range"] {
+  width: 100%;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--nursing-glass-border) 55%, transparent);
+  outline: none;
+}
+
+#year65App .y65-i-slider input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 0 10px rgba(255,255,255,0.35);
+  cursor: pointer;
+}
+
+#year65App .y65-i-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--nursing-text-3);
+  margin-top: -4px;
+  user-select: none;
+}
+
+#year65App .y65-i-note {
+  font-size: 13px;
+  color: var(--nursing-text-2);
+  line-height: 1.5;
+}
+
+/* =========================================================
+   PIN Modal (unlock)
+========================================================= */
+#year65App .y65-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--y65-z-modal);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.62);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+#year65App .y65-modal.open {
+  display: flex;
+  pointer-events: auto;
+}
+
+#year65App .y65-modal-card {
+  width: min(420px, calc(100vw - 32px));
+  border-radius: 22px;
+  padding: 18px;
+  background: color-mix(in srgb, var(--nursing-glass-bg) 92%, transparent);
+  border: 1px solid var(--nursing-glass-border);
+  box-shadow: 0 16px 50px rgba(0,0,0,0.45);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(160%);
+}
+
+#year65App .y65-modal-title {
+  font-size: 16px;
+  font-weight: 1000;
+  letter-spacing: 0.4px;
+  margin-bottom: 8px;
+}
+
+#year65App .y65-modal-desc {
+  font-size: 13px;
+  color: var(--nursing-text-2);
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+
+#year65App .y65-pin-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+#year65App .y65-pin-input {
+  flex: 1;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--nursing-glass-border);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 70%, transparent);
+  color: rgba(255,255,255,0.92);
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 6px;
+  text-align: center;
+  outline: none;
+}
+
+#year65App .y65-pin-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+#year65App .y65-modal-btn {
+  flex: 1;
+  padding: 12px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--nursing-glass-border);
+  background: color-mix(in srgb, var(--nursing-glass-bg) 70%, transparent);
+  color: rgba(255,255,255,0.92);
+  font-weight: 1000;
+  cursor: pointer;
+}
+
+#year65App .y65-modal-btn.primary {
+  border-color: color-mix(in srgb, var(--nursing-color-spo2) 35%, var(--nursing-glass-border));
+  background: color-mix(in srgb, var(--nursing-color-spo2) 14%, var(--nursing-glass-bg));
+}
+
+#year65App .y65-modal-error {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--nursing-color-hr);
+  font-weight: 900;
+  display: none;
+}
+
+#year65App .y65-modal-error.show {
+  display: block;
+}
+
+/* =========================================================
+   Responsive (mobile)
+========================================================= */
+@media (max-width: 900px) {
+  #year65App .y65-dashboard {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto 84px;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  #year65App .y65-topbar {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    align-items: flex-start;
+    gap: 8px;
+    flex-direction: column;
+  }
+
+  #year65App .y65-topbar-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  #year65App .y65-system-status-panel {
+    left: 0;
+    right: auto;
+  }
+
+  #year65App .y65-bottom {
+    grid-column: 1;
+  }
+
+  #year65App .y65-student-drawer {
+    width: 100vw;
+    right: -100vw;
+  }
+
+  #year65App .y65-instructor-drawer {
+    width: 100vw;
+    right: -100vw;
+  }
+
+  #year65App .y65-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #year65App .y65-student-handle {
+    top: 64px;
+  }
+}
+
+@media (max-width: 1280px) {
+  #year65App .y65-dashboard {
+    grid-template-columns: minmax(240px, 30vw) minmax(360px, 1fr) minmax(230px, 28vw);
+  }
+
+  #year65App .y65-vital {
+    padding: 14px;
+    min-height: 96px;
+  }
+
+  #year65App .y65-vital-value {
+    font-size: 22px;
+  }
+
+  #year65App .y65-vital-trend {
+    width: min(100%, 220px);
+  }
+}
+
+/* =========================================================
+   Year65: Settings panel + Instructor overlay (glass UI)
+========================================================= */
+#year65App ~ .settings-panel {
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.18)),
+    rgba(66, 72, 82, 0.76);
+  border-left: 1px solid var(--nursing-glass-border);
+  box-shadow: -14px 0 32px rgba(0, 0, 0, 0.45);
+  color: var(--nursing-text-1);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(150%);
+}
+
+#year65App ~ .settings-panel .settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--nursing-glass-border);
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.12)),
+    rgba(66, 72, 82, 0.78);
+}
+
+#year65App ~ .settings-panel .settings-title {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .settings-panel .close-settings {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid var(--nursing-glass-border);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--nursing-text-1);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+#year65App ~ .settings-panel .close-settings svg {
+  fill: currentColor;
+}
+
+#year65App ~ .settings-panel .close-settings:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+#year65App ~ .settings-panel .setting-group {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.12)),
+    rgba(32, 38, 46, 0.55);
+  border: 1px solid var(--nursing-glass-border);
+  box-shadow: inset 0 1px 0 var(--nursing-glass-highlight);
+}
+
+#year65App ~ .settings-panel .setting-label,
+#year65App ~ .settings-panel .setting-sub-label,
+#year65App ~ .settings-panel .setting-meter,
+#year65App ~ .settings-panel .setting-info,
+#year65App ~ .settings-panel .model-status,
+#year65App ~ .settings-panel .api-status-title {
+  font-size: 14px;
+  color: var(--nursing-text-2);
+}
+
+#year65App ~ .settings-panel .setting-label {
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .settings-panel .setting-group select,
+#year65App ~ .settings-panel .setting-group input[type="text"],
+#year65App ~ .settings-panel .setting-group input[type="number"],
+#year65App ~ .settings-panel .setting-group textarea {
+  background: rgba(15, 18, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--nursing-text-1);
+  font-size: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+#year65App ~ .settings-panel .setting-group select:focus,
+#year65App ~ .settings-panel .setting-group input[type="text"]:focus,
+#year65App ~ .settings-panel .setting-group input[type="number"]:focus,
+#year65App ~ .settings-panel .setting-group textarea:focus {
+  border-color: rgba(95, 227, 255, 0.65);
+  box-shadow: 0 0 0 2px rgba(95, 227, 255, 0.2);
+  outline: none;
+}
+
+#year65App ~ .settings-panel .y65-vital-threshold-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#year65App ~ .settings-panel .y65-vital-threshold-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#year65App ~ .settings-panel .setting-group input::placeholder,
+#year65App ~ .settings-panel .setting-group textarea::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+#year65App ~ .settings-panel .api-status {
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#year65App ~ .settings-panel .primary-btn {
+  background: linear-gradient(135deg, rgba(94, 234, 212, 0.9), rgba(79, 173, 255, 0.9));
+  color: #071019;
+  font-size: 14px;
+  min-height: 44px;
+  box-shadow: 0 6px 18px rgba(94, 234, 212, 0.35);
+}
+
+#year65App ~ .settings-panel .secondary-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--nursing-text-1);
+  font-size: 14px;
+  min-height: 44px;
+}
+
+#year65App ~ .settings-panel .secondary-btn.warning {
+  border-color: rgba(243, 156, 18, 0.5);
+  color: #f4b86b;
+}
+
+#year65App ~ .settings-panel .secondary-btn.danger {
+  border-color: rgba(255, 107, 107, 0.6);
+  color: #ffb4b4;
+}
+
+#year65App ~ .teaching-overlay-mask {
+  background: var(--y65-mask-bg);
+  backdrop-filter: blur(6px);
+}
+
+#year65App ~ .teaching-overlay {
+  background:
+    linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.2)),
+    rgba(66, 72, 82, 0.78);
+  border-left: 1px solid var(--nursing-glass-border);
+  box-shadow: -14px 0 32px rgba(0, 0, 0, 0.45);
+  color: var(--nursing-text-1);
+  backdrop-filter: blur(var(--nursing-glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--nursing-glass-blur)) saturate(150%);
+  width: 980px;
+  max-width: 95vw;
+  /* Clear font settings for better readability */
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, "PingFang TC", "Noto Sans TC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-content {
+  padding: 14px 16px 18px;
+  gap: 10px;
+  font-size: 14px;
+}
+
+#year65App ~ .teaching-overlay .teaching-setup-grid,
+#year65App ~ .teaching-overlay .teaching-live-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#year65App ~ .teaching-overlay .teaching-setup-col,
+#year65App ~ .teaching-overlay .teaching-live-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+#year65App ~ .teaching-overlay .timeline-preset-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#year65App ~ .teaching-overlay .teaching-setup-grid.timeline-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#year65App ~ .teaching-overlay .teaching-setup-grid.timeline-only .teaching-setup-col {
+  display: none;
+}
+
+#year65App ~ .teaching-overlay .teaching-setup-grid.timeline-only .teaching-setup-col.timeline-col {
+  display: flex;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-debrief-btn {
+  font-size: 15px;
+  padding: 7px 12px;
+}
+
+#year65App ~ .teaching-overlay .overlay-section-title {
+  font-size: 14px;
+}
+
+#year65App ~ .teaching-overlay .overlay-preset-grid,
+#year65App ~ .teaching-overlay .overlay-event-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#year65App ~ .teaching-overlay .overlay-preset-btn,
+#year65App ~ .teaching-overlay .overlay-event-btn {
+  font-size: 14px;
+  padding: 8px 12px;
+}
+
+#year65App ~ .teaching-overlay .overlay-field label,
+#year65App ~ .teaching-overlay .overlay-metric-slider label {
+  font-size: 13px;
+}
+
+#year65App ~ .teaching-overlay .overlay-field select {
+  font-size: 14px;
+  padding: 8px 12px;
+}
+
+#year65App ~ .teaching-overlay .fine-label {
+  font-size: 14px;
+}
+
+#year65App ~ .teaching-overlay .fine-btn {
+  font-size: 13px;
+  padding: 7px 12px;
+}
+
+#year65App ~ .teaching-overlay .overlay-metric-slider {
+  margin-bottom: 8px;
+}
+
+#year65App ~ .teaching-overlay .event-title {
+  font-size: 14px;
+}
+
+#year65App ~ .teaching-overlay .event-meta {
+  font-size: 13px;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 12px;
+  align-items: start;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-header {
+  border-bottom: 1px solid var(--nursing-glass-border);
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-title {
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-close {
+  color: var(--nursing-text-2);
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-debrief-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .teaching-overlay .teaching-overlay-debrief-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.36);
+}
+
+#year65App ~ .teaching-overlay .overlay-section-title,
+#year65App ~ .teaching-overlay .overlay-field label,
+#year65App ~ .teaching-overlay .overlay-metric-slider label {
+  color: var(--nursing-text-3);
+}
+
+#year65App ~ .teaching-overlay .overlay-preset-btn,
+#year65App ~ .teaching-overlay .overlay-event-btn,
+#year65App ~ .teaching-overlay .fine-btn,
+#year65App ~ .teaching-overlay .overlay-metrics span {
+  background: rgba(15, 18, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .teaching-overlay .overlay-preset-btn.active,
+#year65App ~ .teaching-overlay .overlay-event-btn:hover {
+  border-color: rgba(95, 227, 255, 0.6);
+  box-shadow: 0 0 0 2px rgba(95, 227, 255, 0.2);
+  background: rgba(20, 24, 30, 0.72);
+}
+
+#year65App ~ .teaching-overlay .overlay-field select {
+  background: rgba(15, 18, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--nursing-text-1);
+}
+
+#year65App ~ .teaching-overlay .event-title,
+#year65App ~ .teaching-overlay .fine-label,
+#year65App ~ .teaching-overlay .overlay-metric-slider span {
+  color: var(--nursing-text-2);
+}
+
+#year65App ~ .teaching-overlay .event-meta {
+  color: var(--nursing-text-3);
+}
+
+/* =========================================================
+   Year65: Loading + Error States
+========================================================= */
+#year65App .y65-loading-skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: var(--y65-z-dashboard);
+  display: none;
+  grid-template-columns: 340px 1fr 300px;
+  grid-template-rows: 1fr;
+  gap: 18px;
+  padding: 20px;
+  padding-top: 70px;
+  background: linear-gradient(180deg, rgba(11, 15, 20, 0.92), rgba(11, 15, 20, 0.96));
+  pointer-events: none;
+}
+
+#year65App .y65-loading-skeleton.active {
+  display: grid;
+}
+
+#year65App .y65-skeleton-left,
+#year65App .y65-skeleton-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#year65App .y65-skeleton-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding-top: 14px;
+}
+
+#year65App .y65-skeleton-vital,
+#year65App .y65-skeleton-cues,
+#year65App .y65-skeleton-card,
+#year65App .y65-skeleton-mini,
+#year65App .y65-skeleton-title,
+#year65App .y65-skeleton-avatar {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04));
+  background-size: 200% 100%;
+  animation: y65Shimmer 1.6s linear infinite;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--monitor-shadow);
+}
+
+#year65App .y65-skeleton-vital {
+  height: 94px;
+  border-radius: var(--y65-radius-md);
+}
+
+#year65App .y65-skeleton-cues {
+  flex: 1;
+  min-height: 180px;
+  border-radius: var(--y65-radius-md);
+}
+
+#year65App .y65-skeleton-title {
+  width: 220px;
+  height: 26px;
+  border-radius: 999px;
+}
+
+#year65App .y65-skeleton-avatar {
+  width: min(560px, 72%);
+  height: min(640px, 64vh);
+  border-radius: 24px;
+}
+
+#year65App .y65-skeleton-card {
+  height: 120px;
+  border-radius: var(--y65-radius-md);
+}
+
+#year65App .y65-skeleton-mini {
+  height: 64px;
+  border-radius: 14px;
+}
+
+#year65App .y65-error-state {
+  position: absolute;
+  inset: 0;
+  z-index: var(--y65-z-modal);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  background: rgba(11, 15, 20, 0.7);
+  backdrop-filter: blur(10px);
+}
+
+#year65App .y65-error-state[hidden],
+#year65App .y65-loading-skeleton[hidden],
+#year65App .y65-offline-state[hidden] {
+  display: none;
+}
+
+#year65App .y65-error-icon {
+  font-size: 28px;
+}
+
+#year65App .y65-error-title {
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+}
+
+#year65App .y65-error-message {
+  font-size: 13px;
+  color: var(--monitor-text-2);
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+#year65App .y65-error-retry {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--monitor-text-1);
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+#year65App .y65-error-retry:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+}
+
+#year65App .y65-offline-state {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: calc(var(--y65-z-modal) + 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(255, 159, 67, 0.92);
+  color: #1a1a1a;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* =========================================================
+   Year65: Motion + Micro-interactions
+========================================================= */
+#year65App .y65-fade-in {
+  animation: y65FadeIn 0.4s ease-out forwards;
+}
+
+#year65App .y65-fade-in-delay-1 { animation-delay: 0.1s; opacity: 0; }
+#year65App .y65-fade-in-delay-2 { animation-delay: 0.2s; opacity: 0; }
+#year65App .y65-fade-in-delay-3 { animation-delay: 0.3s; opacity: 0; }
+#year65App .y65-fade-in-delay-4 { animation-delay: 0.4s; opacity: 0; }
+
+#year65App .y65-btn:hover {
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--nursing-glass-highlight), 0 0 0 2px rgba(95, 227, 255, 0.18);
+}
+
+#year65App .y65-btn:active {
+  transform: scale(0.97);
+  transition: transform 0.08s ease;
+}
+
+#year65App .y65-btn.loading {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+
+#year65App .y65-btn.loading::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  top: 50%;
+  left: 50%;
+  margin: -8px 0 0 -8px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: y65Spin 0.8s linear infinite;
+}
+
+#year65App .y65-student-handle:hover {
+  background: linear-gradient(180deg, var(--nursing-glass-highlight), rgba(0, 0, 0, 0.06)),
+    color-mix(in srgb, var(--nursing-glass-bg) 85%, transparent);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+#year65App .y65-vital {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+#year65App .y65-vital:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+.y65-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(0);
+  animation: y65Ripple 0.6s ease-out;
+  pointer-events: none;
+}
+
+.y65-ripple-target {
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes y65Ripple {
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+.toggle-switch .slider {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toggle-switch input:checked + .slider {
+  background: var(--nursing-color-spo2);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--nursing-color-spo2) 70%, transparent);
+}
+
+/* =========================================================
+   Year65: Data Visualization Enhancements
+========================================================= */
+#year65App .y65-vital-trend {
+  background: linear-gradient(180deg, var(--y65-wave-fill, rgba(111, 231, 247, 0.14)), rgba(0, 0, 0, 0));
+  border-radius: 12px;
+}
+
+#year65App .y65-vital.hr {
+  --y65-wave-fill: rgba(255, 107, 107, 0.18);
+}
+
+#year65App .y65-vital.bp {
+  --y65-wave-fill: rgba(107, 182, 255, 0.18);
+}
+
+#year65App .y65-vital.rr {
+  --y65-wave-fill: rgba(94, 242, 160, 0.18);
+}
+
+#year65App .y65-vital.spo2 {
+  --y65-wave-fill: rgba(95, 227, 255, 0.18);
+}
+
+#year65App .y65-vital.warning {
+  animation: y65VitalWarning 1s ease-in-out infinite;
+}
+
+@keyframes y65VitalWarning {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 159, 67, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(255, 159, 67, 0);
+  }
+}
+
+.y65-trend-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--monitor-text-2);
+}
+
+.y65-trend-up { color: var(--monitor-color-warning); }
+.y65-trend-down { color: var(--monitor-color-success); }
+.y65-trend-stable { color: var(--monitor-text-2); }
+.y65-trend-warning { color: var(--monitor-color-warning); }
+
+#year65App .y65-vital.hr .y65-trend-indicator.y65-trend-stable { color: #ff6b6b; }
+#year65App .y65-vital.bp .y65-trend-indicator.y65-trend-stable { color: #6bb6ff; }
+#year65App .y65-vital.rr .y65-trend-indicator.y65-trend-stable { color: #5ef2a0; }
+#year65App .y65-vital.spo2 .y65-trend-indicator.y65-trend-stable { color: #5fe3ff; }
+
+@media (prefers-reduced-motion: reduce) {
+  #year65App .y65-avatar-figure.breathing,
+  #year65App .y65-avatar-figure.tremor,
+  #year65App .y65-sweat.drip,
+  #year65App .y65-chest-glow,
+  #year65App .y65-chest-ring,
+  #year65App .y65-loading-skeleton *,
+  #year65App .y65-fade-in,
+  #year65App .y65-vital.warning,
+  #year65App .y65-btn.loading::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Patient dialogue subtitle */
+.y65-subtitle {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 600px;
+  width: 90%;
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.75);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.5;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.y65-subtitle.show {
+  opacity: 1;
+  visibility: visible;
+}

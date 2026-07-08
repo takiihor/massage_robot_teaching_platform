@@ -1,0 +1,329 @@
+        /* ===== HEADER ===== */
+        .app-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 24px;
+            background: white;
+            border-bottom: 1px solid var(--border-color);
+            z-index: 100;
+            flex-shrink: 0;
+            /* Don't shrink */
+        }
+
+        /* ===== NEW MODE SWITCHER ===== */
+        .mode-switcher-container {
+            padding: 16px 24px 0;
+            background: white;
+            display: flex;
+            justify-content: center;
+            flex-shrink: 0;
+            /* Don't shrink */
+        }
+
+        /* ===== MAIN LAYOUT ===== */
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            flex: 1;
+            /* Take remaining space */
+            min-height: 0;
+            /* Allow scrolling inside */
+            overflow: hidden;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-circle {
+            width: 36px;
+            height: 36px;
+            background: var(--primary-blue);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .app-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+
+        .header-guide-text {
+            font-size: 14px;
+            color: var(--text-gray);
+            font-weight: 400;
+            margin-left: 16px;
+            white-space: nowrap;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            border: 1px solid var(--border-color);
+            background: white;
+        }
+
+        .status-badge.asr {
+            color: var(--primary-blue);
+            border-color: var(--primary-blue);
+        }
+
+        .status-badge.tts {
+            color: var(--text-gray);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary-green);
+            box-shadow: none;
+        }
+
+        .status-dot.inactive {
+            background: #ccc;
+        }
+
+        .status-dot.speaking {
+            box-shadow: 0 0 0 6px rgba(76, 175, 80, 0.35);
+        }
+
+        .status-dot.error {
+            background: #E53935;
+            box-shadow: 0 0 0 6px rgba(229, 57, 53, 0.25);
+        }
+
+        .settings-gear {
+            width: 36px;
+            height: 36px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: background 0.2s;
+        }
+
+        .settings-gear:hover {
+            background: #f0f0f0;
+        }
+
+        .settings-gear svg {
+            width: 22px;
+            height: 22px;
+            fill: var(--text-gray);
+        }
+
+        /* ===== MAIN LAYOUT ===== */
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            /* height: calc(100vh - 61px - 45px); REMOVED to fix jitter */
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* ===== CONTENT AREA (Switchable) ===== */
+        .content-area {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ===== FOOTER STATUS BAR ===== */
+        .status-bar {
+            background: white;
+            border-top: 1px solid var(--border-color);
+            padding: 10px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 13px;
+            flex-shrink: 0;
+            /* Don't shrink */
+        }
+
+        .status-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-gray);
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .status-indicator.ready {
+            background: var(--primary-green);
+        }
+
+        .status-indicator.running {
+            background: var(--primary-blue);
+            animation: blink 1s infinite;
+        }
+
+        .status-right {
+            display: flex;
+            gap: 12px;
+            color: var(--text-dark);
+        }
+
+        .status-item {
+            padding: 4px 12px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        /* ===== RESPONSIVE DESIGN (Mobile-First) ===== */
+
+        /* Base: Mobile (< 640px) - Already defined above */
+        /* Main layout is flexible by default */
+
+        /* Small Tablets (640px - 767px) */
+        @media (min-width: 640px) {
+            .app-header {
+                padding: 14px 28px;
+            }
+
+            .header-guide-text {
+                display: inline;
+            }
+
+            .status-bar {
+                padding: 12px 28px;
+            }
+        }
+
+        /* Tablets (768px - 1023px) */
+        @media (min-width: 768px) {
+            .app-header {
+                padding: 16px 32px;
+            }
+
+            .status-bar {
+                padding: 12px 32px;
+            }
+        }
+
+        /* Desktop (1024px+) - Original layout */
+        @media (min-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr 360px;
+            }
+        }
+
+        /* Large Desktop (1280px+) */
+        @media (min-width: 1280px) {
+            .main-layout {
+                grid-template-columns: 1fr 400px;
+            }
+        }
+
+        /* Extra Large Desktop (1536px+) */
+        @media (min-width: 1536px) {
+            .app-header {
+                padding: 16px 48px;
+            }
+
+            .status-bar {
+                padding: 12px 48px;
+            }
+        }
+
+        /* ===== MOBILE-SPECIFIC STYLES ===== */
+        @media (max-width: 767px) {
+            /* Hide guide text on mobile */
+            .header-guide-text {
+                display: none;
+            }
+
+            /* Compact header on mobile */
+            .app-header {
+                padding: 10px 16px;
+            }
+
+            .app-title {
+                font-size: 16px;
+            }
+
+            .logo-circle {
+                width: 32px;
+                height: 32px;
+                font-size: 12px;
+            }
+
+            /* Stack status badges on very small screens */
+            .status-bar {
+                padding: 8px 16px;
+                font-size: 12px;
+            }
+
+            .status-right {
+                gap: 6px;
+            }
+
+            .status-item {
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+        }
+
+        /* ===== TOUCH DEVICE OPTIMIZATIONS ===== */
+        @media (pointer: coarse) {
+            /* Increase touch targets for touch devices */
+            .settings-gear {
+                width: 44px;
+                height: 44px;
+            }
+
+            .status-badge {
+                padding: 8px 14px;
+                min-height: 44px;
+            }
+        }
+
+        /* ===== HOVER-CAPABLE DEVICES ONLY ===== */
+        @media (hover: hover) and (pointer: fine) {
+            .settings-gear:hover {
+                background: #f0f0f0;
+            }
+        }
+
+        /* Remove hover effects on touch devices */
+        @media (hover: none) {
+            .settings-gear:hover {
+                background: transparent;
+            }
+
+            /* Add active state instead */
+            .settings-gear:active {
+                background: #e0e0e0;
+            }
+        }

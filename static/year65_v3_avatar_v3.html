@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:,">
+  <title>Year65 - Nursing Dashboard + Massage Setup</title>
+  <link rel="stylesheet" href="/static/css/1-variables.css">
+  <link rel="stylesheet" href="/static/css/2-base.css">
+  <link rel="stylesheet" href="/static/css/3-layout.css">
+  <link rel="stylesheet" href="/static/css/components/chat.css">
+  <link rel="stylesheet" href="/static/css/components/massage.css">
+  <link rel="stylesheet" href="/static/css/components/sidebar.css">
+  <link rel="stylesheet" href="/static/css/components/teaching.css">
+  <link rel="stylesheet" href="/static/css/components/nursing-theme.css">
+  <link rel="stylesheet" href="/static/css/components/nursing-dashboard.css">
+  <link rel="stylesheet" href="/static/css/components/nursing-debrief.css">
+  <link rel="stylesheet" href="/static/css/components/patient-expression-animations.css">
+  <link rel="stylesheet" href="/static/css/4-overrides.css">
+  <link rel="stylesheet" href="/static/styles_compiled.css">
+  <link rel="stylesheet" href="/static/css/components/year65-theme.css">
+  <link rel="stylesheet" href="/static/css/components/scenario-flow.css">
+
+  <style id="y65-optimizations">
+    /* 壓縮 Patient Cues 釋放空間給 Canvas */
+    .y65-cues { margin-top: auto; padding-top: 4px; }
+    .y65-cues-title { font-size: 0.75rem; margin-bottom: 4px; }
+    .y65-cue { padding: 6px 10px; margin-bottom: 4px; border-radius: 6px; }
+    .y65-cue-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+    .y65-cue-label { font-size: 0.75rem; margin: 0; opacity: 0.8; }
+    .y65-cue-value { font-size: 0.85rem; font-weight: 600; margin: 0; }
+    
+    /* 10-Level 縮小版單行 Bar */
+    .y65-cue-bars { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 2px; width: 100%; }
+    .y65-cue-bar { flex: 1; height: 6px; border-radius: 2px; background-color: rgba(255, 255, 255, 0.15); transition: background-color 0.2s; }
+    .y65-cue-bar.active { background-color: var(--primary-color, #5fe3ff); box-shadow: 0 0 4px color-mix(in srgb, var(--primary-color) 50%, transparent); }
+
+    /* Canvas 高度擴展 */
+    .y65-vital-trend { height: 130px !important; }
+
+    /* 右上角 Countdown Timer 樣式 */
+    .y65-topbar-countdown {
+        display: flex; align-items: center; gap: 8px;
+        background: rgba(255,50,50,0.15); border: 1px solid rgba(255,50,50,0.3);
+        padding: 4px 12px; border-radius: 20px; color: #ff8888; font-family: monospace; font-size: 1.1rem; font-weight: bold;
+    }
+
+    /* 快速模式 卡片樣式 */
+    .y65-quick-mode-card {
+        background: rgba(95, 227, 255, 0.1); border: 1px solid rgba(95, 227, 255, 0.3);
+        border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px;
+    }
+    .y65-quick-mode-card h3 { color: var(--primary-color); margin: 0 0 10px 0; font-size: 1.2rem; }
+    .y65-quick-mode-details { display: flex; justify-content: center; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
+    .y65-quick-tag { background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 6px; font-size: 0.9rem; }
+
+    /* Toggle Switch */
+    .setup-mode-toggle { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(95, 227, 255, 0.08); border-radius: 10px; margin-bottom: 8px; }
+    .setup-mode-toggle .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; flex-shrink: 0; }
+    .setup-mode-toggle .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .setup-mode-toggle .slider { position: absolute; cursor: pointer; inset: 0; background-color: #4a5568; transition: 0.3s; border-radius: 26px; }
+    .setup-mode-toggle .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: white; transition: 0.3s; border-radius: 50%; }
+    .setup-mode-toggle input:checked + .slider { background-color: var(--primary-color, #5fe3ff); box-shadow: 0 0 10px color-mix(in srgb, var(--primary-color) 40%, transparent); }
+    .setup-mode-toggle input:checked + .slider:before { transform: translateX(22px); }
+    .setup-mode-label { font-size: 14px; color: var(--text-primary, #2c3e50); font-weight: 600; }
+    .setup-mode-desc { font-size: 12px; color: var(--text-secondary, #5d6d7e); margin-top: 2px; }
+  </style>
+
+  <style>
+    .monitor-frame {
+      background-color: rgba(15, 23, 42, 0.95);
+      border: 4px solid rgba(95, 227, 255, 0.35);
+      border-radius: 12px;
+      width: 100%;
+      padding: 12px 0;
+      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.6);
+      margin-bottom: 15px;
+    }
+    .vital-row {
+      display: flex;
+      align-items: center;
+      height: 82px;
+      border-bottom: 1px solid #1e2937;
+      overflow: hidden;
+    }
+    .vital-row:last-child { border-bottom: none; }
+    .vital-text {
+      width: 130px;
+      padding-left: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .vital-text { color: inherit; }
+    .vital-text .vital-value,
+    .vital-text .vital-label,
+    .vital-text .vital-unit { color: inherit; }
+    .vital-label {
+      font-size: 12.5px;
+      text-transform: uppercase;
+      margin-bottom: -2px;
+      opacity: 0.9;
+      font-weight: 600;
+    }
+    .vital-unit { font-size: 11px; opacity: 0.75; }
+    .vital-value {
+      font-size: 38px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .vital-value-small { font-size: 32px; }
+    .waveform-container {
+      flex-grow: 1;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+    .monitor-frame svg {
+      width: 100%;
+      height: 100%;
+    }
+    .color-ecg { color: #4ade80; }
+    .color-bp { color: #f87171; }
+    .color-rr { color: #fcd34d; }
+    .color-spo2 { color: #22d3ee; }
+    .stroke-ecg { stroke: #4ade80; }
+    .stroke-bp { stroke: #f87171; }
+    .stroke-rr { stroke: #fcd34d; }
+    .stroke-spo2 { stroke: #22d3ee; }
+
+    /* Fix container clipping - allow popup to extend beyond avatar stage */
+    .y65-avatar-stage {
+      overflow: visible !important;
+    }
+
+    /* Nurse Reminder - Chat Bubble Layout */
+    .nurse-reminder-popup {
+      position: absolute;
+      top: 5%;
+      right: -30px;
+      left: auto;
+      transform: none;
+      z-index: 9999;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .nurse-reminder-popup.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .nurse-bubble-wrapper {
+      position: relative;
+      display: inline-block;
+    }
+    .nurse-bubble-img {
+      width: 200px;
+      height: auto;
+      display: block;
+      filter: brightness(0) invert(1) drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+      animation: nurse-float 3s ease-in-out infinite;
+    }
+    @keyframes nurse-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    /* Text sits in the oval body of the bubble (top ~65% of image height) */
+    .nurse-bubble-text {
+      position: absolute;
+      top: 38%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 70%;
+      text-align: center;
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #ffffff;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+    .nurse-reminder-close {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.15);
+      border: none;
+      color: #4a5568;
+      font-size: 0.9rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+    .nurse-reminder-close:hover {
+      background: rgba(0, 0, 0, 0.25);
+      color: #1a202c;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="liveRegion" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div id="voiceSetupBanner" class="voice-setup-banner hidden" role="status" aria-live="polite">
+    <div class="banner-icon" aria-hidden="true">🎤</div>
+    <div class="banner-content">
+      <div class="banner-title" id="voiceSetupTitle" data-i18n="voiceSetupListening">正在聆聽...</div>
+      <div class="banner-prompt" id="voiceSetupPrompt"></div>
+      <div class="banner-asr-debug" id="asrDebugDisplay">
+        <span class="asr-label">ASR:</span>
+        <span class="asr-text" id="asrDebugText">-</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="year65App" aria-label="Year65 App">
+    <div class="y65-bg"></div>
+
+    <div class="y65-loading-skeleton" id="y65LoadingSkeleton" aria-hidden="true">
+      <div class="y65-skeleton-left">
+        <div class="y65-skeleton-vital"></div>
+        <div class="y65-skeleton-vital"></div>
+        <div class="y65-skeleton-vital"></div>
+        <div class="y65-skeleton-vital"></div>
+        <div class="y65-skeleton-cues"></div>
+      </div>
+      <div class="y65-skeleton-center">
+        <div class="y65-skeleton-title"></div>
+        <div class="y65-skeleton-avatar"></div>
+      </div>
+      <div class="y65-skeleton-right">
+        <div class="y65-skeleton-card"></div>
+        <div class="y65-skeleton-card"></div>
+        <div class="y65-skeleton-mini"></div>
+      </div>
+    </div>
+
+    <div class="y65-error-state" id="y65ErrorState" hidden>
+      <div class="y65-error-icon" aria-hidden="true">⚠️</div>
+      <div class="y65-error-title">載入失敗</div>
+      <div class="y65-error-message" id="y65ErrorMessage">請稍後再試，或重新整理頁面。</div>
+      <button class="y65-error-retry" id="y65RetryBtn" type="button">重試</button>
+    </div>
+
+    <div class="y65-offline-state" id="y65OfflineState" hidden>
+      <span class="y65-offline-icon" aria-hidden="true">📡</span>
+      <span>網路連線中斷</span>
+    </div>
+
+    <div class="y65-topbar">
+      <div class="y65-status-pill" id="y65StatusPill">
+        <span class="y65-dot" id="y65ConnDot"></span>
+        <span>狀態：</span><strong id="y65UiModeText">待開始</strong>
+      </div>
+
+      <div class="y65-topbar-actions">
+
+        <div class="status-badge asr" id="y65AsrToggle" role="button" tabindex="0" aria-live="polite" aria-label="Start or stop ASR speech recognition" title="Start/stop ASR">
+          <span class="status-dot" id="asrStatusDot" aria-label="ASR 連線狀態"></span>
+          <span id="y65AsrLangText">ASR</span>
+        </div>
+        <div class="status-badge expression" role="status" aria-live="polite">
+          <span class="status-dot" id="expressionStatusDot" aria-label="Expression mode"></span>
+          <span>Expr</span>
+          <strong id="y65ExpressionModeText">Timeline</strong>
+          <span id="y65ExpressionPresetText"></span>
+        </div>
+        <div class="status-badge robot" role="status" aria-live="polite">
+          <span class="status-dot y65-robot-dot" id="y65RobotStateDot" aria-label="Robot state"></span>
+          <span id="y65RobotStateText">Robot: --</span>
+        </div>
+        <div class="status-badge scenario" role="status" aria-live="polite" id="y65ScenarioChip">Scenario: Off</div>
+        
+        <button class="settings-gear" id="settingsBtn" aria-label="打開設定面板" aria-expanded="false"
+          aria-controls="settingsPanel" data-i18n-title="tooltipSettings" title="設定">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path
+              d="M12 15.5A3.5 3.5 0 0 1 8.5 12A3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5a3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97c0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49-.12-.64L4.57 11c-.04.34-.07.67-.07 1c0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z" />
+          </svg>
+        </button>
+        <div class="y65-instructor-entry" id="y65InstructorEntry" title="Instructor (長按解鎖)">
+          🔒
+        </div>
+      </div>
+    </div>
+    
+    <div class="y65-dashboard" aria-label="Dashboard">
+      <div class="y65-left">
+        <div class="monitor-frame">
+          <div class="vital-row">
+            <div class="vital-text color-ecg">
+              <div class="vital-value" id="vitalHR">88</div>
+              <div class="vital-label">HR <span class="vital-unit">bpm</span></div>
+            </div>
+            <div class="waveform-container">
+              <svg id="svg-hr" preserveAspectRatio="none">
+                <defs>
+                  <path id="ecg-beat" d="M0,60 L12,60 C15,60 16,52 20,52 C24,52 25,60 28,60 L32,60 L34,65 L38,5 L42,75 L45,60 L55,60 C60,60 62,35 70,35 C78,35 80,60 85,60 L100,60" fill="none" class="stroke-ecg" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+                  <mask id="sweep-mask-hr">
+                    <rect width="10000" height="100" fill="white"/>
+                    <rect y="0" width="30" height="100" fill="black">
+                      <animate id="anim-hr" attributeName="x" from="0" to="1000" dur="3.75s" repeatCount="indefinite"/>
+                    </rect>
+                  </mask>
+                </defs>
+                <g id="group-hr" mask="url(#sweep-mask-hr)"></g>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital-row">
+            <div class="vital-text color-bp">
+              <div class="vital-value vital-value-small"><span id="vitalSBP">120</span>/<span id="vitalDBP">80</span></div>
+              <div class="vital-label">BP <span class="vital-unit">mmHg</span></div>
+            </div>
+            <div class="waveform-container">
+              <svg id="svg-bp" preserveAspectRatio="none">
+                <defs>
+                  <path id="bp-beat" d="M0,90 C10,90 15,15 30,15 C45,15 55,45 60,50 L63,75 L67,50 C80,60 95,85 100,90" fill="none" class="stroke-bp" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+                  <mask id="sweep-mask-bp">
+                    <rect width="10000" height="100" fill="white"/>
+                    <rect y="0" width="30" height="100" fill="black">
+                      <animate id="anim-bp" attributeName="x" from="0" to="1000" dur="3.75s" repeatCount="indefinite"/>
+                    </rect>
+                  </mask>
+                </defs>
+                <g id="group-bp" mask="url(#sweep-mask-bp)"></g>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital-row">
+            <div class="vital-text color-rr">
+              <div class="vital-value" id="vitalRR">18</div>
+              <div class="vital-label">RR <span class="vital-unit">/min</span></div>
+            </div>
+            <div class="waveform-container">
+              <svg id="svg-rr" preserveAspectRatio="none">
+                <defs>
+                  <path id="rr-beat" d="M0,70 Q12,50 25,50 Q37,50 50,70 Q62,85 75,70 Q87,50 100,70" fill="none" class="stroke-rr" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+                  <mask id="sweep-mask-rr">
+                    <rect width="10000" height="100" fill="white"/>
+                    <rect y="0" width="30" height="100" fill="black">
+                      <animate id="anim-rr" attributeName="x" from="0" to="1000" dur="3.75s" repeatCount="indefinite"/>
+                    </rect>
+                  </mask>
+                </defs>
+                <g id="group-rr" mask="url(#sweep-mask-rr)"></g>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital-row">
+            <div class="vital-text color-spo2">
+              <div class="vital-value" id="vitalSPO2">98</div>
+              <div class="vital-label">SpO2 <span class="vital-unit">%</span></div>
+            </div>
+            <div class="waveform-container">
+              <svg id="svg-spo2" preserveAspectRatio="none">
+                <defs>
+                  <path id="spo2-beat" d="M0,80 C10,80 20,20 35,20 C48,20 52,45 55,50 C58,55 60,60 62,60 C65,50 68,45 75,50 C85,60 90,80 100,80" fill="none" class="stroke-spo2" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+                  <mask id="sweep-mask-spo2">
+                    <rect width="10000" height="100" fill="white"/>
+                    <rect y="0" width="30" height="100" fill="black">
+                      <animate id="anim-spo2" attributeName="x" from="0" to="1000" dur="3.75s" repeatCount="indefinite"/>
+                    </rect>
+                  </mask>
+                </defs>
+                <g id="group-spo2" mask="url(#sweep-mask-spo2)"></g>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="y65-cues" id="y65CuesCard">
+          <div class="y65-cues-title">Patient Cues</div>
+          <div class="y65-cue pain" data-cue="pain">
+              <div class="y65-cue-header">
+                <div class="y65-cue-label">Pain 痛楚</div>
+                <div class="y65-cue-value" id="cuePain"></div>
+              </div>
+            <div class="y65-cue-bars">
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+            </div>
+          </div>
+          <div class="y65-cue anxiety" data-cue="anxiety">
+              <div class="y65-cue-header">
+                <div class="y65-cue-label">Anxiety 焦慮</div>
+                <div class="y65-cue-value" id="cueAnxiety"></div>
+              </div>
+            <div class="y65-cue-bars">
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+            </div>
+          </div>
+          <div class="y65-cue comfort" data-cue="comfort">
+              <div class="y65-cue-header">
+                <div class="y65-cue-label">Comfort 舒適度</div>
+                <div class="y65-cue-value" id="cueComfort"></div>
+              </div>
+            <div class="y65-cue-bars">
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+              <span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span><span class="y65-cue-bar"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="y65-center">
+        <div class="y65-avatar-stage" id="y65AvatarStage">
+          <div class="y65-chest-glow" id="y65ChestGlow"></div>
+          <div class="y65-chest-ring" id="y65ChestRing"></div>
+
+          <div class="y65-avatar-stack" id="y65AvatarStack" aria-label="Patient Avatar">
+            <div class="y65-avatar-figure breathing" id="y65AvatarFigure">
+              <img class="y65-avatar-img" id="y65AvatarBase" alt="Patient avatar" src="/static/assets/avatar/baseline.png" />
+              <img class="y65-avatar-face y65-is-hidden" id="y65AvatarFace" alt="" src="" />
+              <img class="y65-sweat drip y65-is-hidden" id="y65AvatarSweat" alt="" src="" />
+            </div>
+
+            <div class="y65-avatar-fallback" id="y65AvatarFallback">
+              找不到 avatar PNG。請把圖片放到 <strong>/static/assets/avatar/</strong><br/>
+              需要：baseline.png / face_*.png
+            </div>
+          </div>
+
+          <div class="y65-subtitle" id="patientSubtitle"></div>
+
+          <!-- Nurse Reminder Popup - positioned near patient's head -->
+          <div id="nurseReminderPopup" class="nurse-reminder-popup" aria-hidden="true">
+            <div class="nurse-bubble-wrapper">
+              <img src="/static/assets/avatar/chat bubble.png" alt="" class="nurse-bubble-img">
+              <div class="nurse-bubble-text">How would you respond?</div>
+              <button class="nurse-reminder-close" id="nurseReminderCloseBtn" aria-label="Close">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="y65-right">
+        <div class="y65-wakeword-hint" id="y65WakeWordHint"></div>
+        
+        <div id="y65NormalUI">
+          <div class="y65-student-handle" id="y65StudentHandle" title="打開按摩設定">
+            <span class="y65-student-handle-main">
+              <span class="y65-handle-dot"></span>
+              <span class="y65-handle-text">Massage Settings / 按摩設定</span>
+            </span>
+            <span class="y65-student-handle-chevron">›</span>
+          </div>
+
+          <div class="y65-glass y65-right-card">
+            <div class="y65-right-title">Session Details</div>
+            <div class="y65-right-row"><span>Mode / 模式</span><span class="y65-badge" id="sessionModeText">—</span></div>
+            <div class="y65-right-row"><span>Intensity / 力度</span><span class="y65-badge" id="sessionIntensityText">—</span></div>
+            <div class="y65-right-row"><span>Duration / 時長</span><span class="y65-badge" id="sessionDurationText">—</span></div>
+            <button class="y65-normal-stop-btn" id="btnStudentStop" type="button" hidden>End Session / 結束</button>
+          </div>
+        </div>
+
+        <div id="y65QuickUI" style="display: none; margin-bottom: 1rem;">
+          <div class="y65-glass y65-quick-mode-card" style="padding: 1.5rem; text-align: center;">
+            <h3 style="margin-top:0; color:var(--primary-color); font-size:1.1rem; margin-bottom:8px;">⚡ Quick Start / 快速開始</h3>
+            <div class="y65-quick-mode-details">
+              <span class="y65-quick-tag" style="background:rgba(255,255,255,0.1);">Massage Mode / 按摩模式</span>
+              <span class="y65-quick-tag" style="background:rgba(255,255,255,0.1);">Intensity: Mid / 力度：中</span>
+              <span class="y65-quick-tag" style="background:rgba(255,255,255,0.1);">Duration: 5 min / 時長：5分</span>
+            </div>
+            <button class="y65-start-btn" id="y65FrontStartBtn" type="button" style="width:100%; padding:12px; border-radius:8px; font-size:1.05rem; cursor:pointer;">▶ Start Massage / 開始按摩</button>
+            <button class="y65-btn-danger" id="y65FrontStopBtn" type="button" style="width:100%; padding:12px; border-radius:8px; font-size:1.05rem; cursor:pointer; display:none; background:rgba(255,50,50,0.8); color:white; border:none;">End Session / 結束</button>
+          </div>
+        </div>
+
+        <div id="y65VirtualTimeContainer" class="y65-glass y65-timer-card" style="margin-top: 1rem; text-align: center; padding: 1.5rem; border-color: var(--primary-color, #5fe3ff);">
+          <div id="y65VirtualTimeChip">
+            <div class="y65-virtual-timer-label" id="y65VirtualTimeLabel" style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 0.5rem;">Progression Time / 進行時間</div>
+            <strong class="y65-virtual-timer-time" id="y65VirtualTimeText" style="font-size: 2.5rem; font-family: monospace; color: var(--primary-color, #a5f3ff); display: block; margin-bottom: 0.25rem;">00:00</strong>
+            <span class="y65-virtual-timer-state y65-badge" id="y65VirtualTimeStatus">SCENARIO</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <div class="y65-student-mask" id="y65StudentMask" aria-hidden="true"></div>
+    <aside class="y65-student-drawer" id="y65StudentDrawer" aria-label="Massage Setup Drawer">
+        <div class="y65-drawer-header">
+          <div class="y65-drawer-title">
+          <span class="y65-label-stack">
+            <span class="y65-label-primary">Massage Settings</span>
+            <span class="y65-label-secondary">按摩設定</span>
+          </span>
+          <span class="y65-mini-tag" id="y65DrawerModeTag">SETUP</span>
+          </div>
+        <div class="y65-drawer-tools">
+          <button class="y65-icon-btn" id="y65DrawerCollapseBtn" title="收合">›</button>
+        </div>
+      </div>
+      <div class="y65-drawer-body" id="y65MassagePanelRoot"></div>
+    </aside>
+    <audio id="nursePromptAudio" src="/static/predefined_sound_track/nurse_prompt/aria_neutral_how_would_you_respond.mp3" preload="auto"></audio>
+
+    <div class="y65-instructor-mask" id="y65InstructorMask" aria-hidden="true"></div>
+    <div id="y65InstructorMount"></div>
+
+    <div class="y65-modal" id="y65PinModal" role="dialog" aria-modal="true" aria-label="Instructor PIN">
+      <div class="y65-modal-card">
+        <div class="y65-modal-title">Instructor Unlock</div>
+        <div class="y65-modal-desc">Enter the instructor PIN. Keep this PIN private and change it before daily teaching.</div>
+        <div class="y65-pin-row">
+          <input class="y65-pin-input" id="y65PinInput" type="password" inputmode="numeric" maxlength="4" placeholder="••••" />
+        </div>
+        <div class="y65-modal-error" id="y65PinError">PIN Error</div>
+        <div class="y65-pin-actions">
+          <button class="y65-modal-btn" id="y65PinCancel">Cancel</button>
+          <button class="y65-modal-btn primary" id="y65PinSubmit">Unlock</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<div class="teaching-overlay-mask" id="teachingOverlayMask" role="presentation"></div>
+    <aside class="teaching-overlay" id="teachingOverlay" role="complementary" aria-label="Teaching Control Panel" aria-hidden="true">
+        <div class="teaching-overlay-header">
+            <h2 class="teaching-overlay-title">Instructor Overlay</h2>
+            <span class="teaching-scenario-badge" id="teachingScenarioBadge" aria-live="polite" title="Click to view scenario flowchart" style="cursor: pointer;">Scenario: Off</span>
+            <button class="teaching-overlay-debrief-btn" id="teachingOverlayDebriefBtn" aria-label="Open Debrief Panel" title="Open Debrief Panel (Ctrl+D)">
+                📋 Debrief
+            </button>
+            <button class="teaching-overlay-close" id="teachingOverlayClose" aria-label="Close Panel">✕</button>
+        </div>
+        <div class="teaching-overlay-content">
+            <div class="teaching-mode-toggle teaching-mode-toggle-inline">
+                <button class="teaching-mode-btn active" data-mode="manual" type="button">Manual Mode</button>
+                <button class="teaching-mode-btn" data-mode="keyboard" type="button">Keyboard Mode</button>
+            </div>
+            <div class="teaching-tabs" role="tablist" aria-label="Instructor Tabs">
+                <button class="teaching-tab-btn active" data-tab="setup" role="tab" aria-selected="true">Setup</button>
+                <button class="teaching-tab-btn" data-tab="live" role="tab" aria-selected="false">Live</button>
+            </div>
+            <div class="teaching-tab-panel active" data-tab-panel="setup" role="tabpanel" id="teachingSetupPanel">
+                <div class="teaching-setup-grid" id="teachingSetupGrid">
+                    <div class="teaching-setup-col">
+                        <section class="manual-mode-section">
+                            <h3 class="overlay-section-title">Manual Vitals Setup</h3>
+                            <div class="overlay-metric-slider">
+                                <label>HR (心率): <span id="manualHrValue">78</span> bpm</label>
+                                <input type="range" id="manualHrSlider" min="40" max="160" step="1" value="78">
+                            </div>
+                            <div class="overlay-metric-slider">
+                                <label>SBP (收縮壓): <span id="manualSbpValue">120</span> mmHg</label>
+                                <input type="range" id="manualSbpSlider" min="80" max="200" step="1" value="120">
+                            </div>
+                            <div class="overlay-metric-slider">
+                                <label>DBP (舒張壓): <span id="manualDbpValue">75</span> mmHg</label>
+                                <input type="range" id="manualDbpSlider" min="40" max="120" step="1" value="75">
+                            </div>
+                            <div class="overlay-metric-slider">
+                                <label>RR (呼吸): <span id="manualRrValue">14</span></label>
+                                <input type="range" id="manualRrSlider" min="8" max="40" step="1" value="14">
+                            </div>
+                            <div class="overlay-metric-slider">
+                                <label>SpO₂ (血氧): <span id="manualSpo2Value">98</span>%</label>
+                                <input type="range" id="manualSpo2Slider" min="85" max="100" step="1" value="98">
+                            </div>
+                            <div class="manual-mode-actions">
+                                <button class="secondary-btn" id="manualVitalsResetBtn" type="button">Reset to Defaults</button>
+                                <button class="secondary-btn" id="manualVitalsApplyBtn" type="button">Apply Settings</button>
+                            </div>
+                        </section>
+                    </div>
+                    <div class="teaching-setup-col">
+                        <section class="teaching-toggle-row">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="teachingAutoExpressionToggle">
+                                <span class="slider"></span>
+                            </label>
+                            <div>
+                                <div class="setup-mode-label">Auto expression from vitals</div>
+                                <div class="setup-mode-desc">Auto-adjust patient expression based on vitals</div>
+                            </div>
+                        </section>
+                        <section>
+                            <h3 class="overlay-section-title">Expression Presets</h3>
+                            <div class="overlay-preset-grid" id="manualPresetGrid" role="group" aria-label="Expression presets"></div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+            <div class="teaching-tab-panel" data-tab-panel="live" role="tabpanel">
+                <div class="teaching-live-grid">
+                    <div class="teaching-live-col">
+                        <section>
+                            <h3 class="overlay-section-title">Live Vitals</h3>
+                            <div class="overlay-metrics" id="teachingVitalsPanel" aria-live="polite"></div>
+                        </section>
+                        <section>
+                            <h3 class="overlay-section-title">Live Cues</h3>
+                            <div class="overlay-metrics" id="teachingCuesPanel" aria-live="polite"></div>
+                        </section>
+                    </div>
+                    <div class="teaching-live-col">
+                        <section>
+                            <h3 class="overlay-section-title">Fine Tune</h3>
+                            <div class="overlay-fine-tune" id="teachingFineTuneGrid" role="group" aria-label="Fine Tune Values">
+                                <div class="fine-tune-row">
+                                    <span class="fine-label">HR</span>
+                                    <button class="fine-btn" data-tune="hr_down">-5</button>
+                                    <button class="fine-btn" data-tune="hr_up">+5</button>
+                                </div>
+                                <div class="fine-tune-row">
+                                    <span class="fine-label">SBP</span>
+                                    <button class="fine-btn" data-tune="sbp_down">-5</button>
+                                    <button class="fine-btn" data-tune="sbp_up">+5</button>
+                                </div>
+                                <div class="fine-tune-row">
+                                    <span class="fine-label">DBP</span>
+                                    <button class="fine-btn" data-tune="dbp_down">-5</button>
+                                    <button class="fine-btn" data-tune="dbp_up">+5</button>
+                                </div>
+                                <div class="fine-tune-row">
+                                    <span class="fine-label">RR</span>
+                                    <button class="fine-btn" data-tune="rr_down">-2</button>
+                                    <button class="fine-btn" data-tune="rr_up">+2</button>
+                                </div>
+                                <div class="fine-tune-row">
+                                    <span class="fine-label">SpO₂</span>
+                                    <button class="fine-btn" data-tune="spo2_down">-1</button>
+                                    <button class="fine-btn" data-tune="spo2_up">+1</button>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                    <div class="teaching-live-col">
+                        <section>
+                            <h3 class="overlay-section-title">Instructor Metrics (Pain/Anxiety 0–10, Comfort 1–5)</h3>
+                            <div class="overlay-metric-slider" title="Pain scale 0–10">
+                                <label for="teachingPainInput">Pain <span id="teachingPainValue">2</span></label>
+                                <input type="range" id="teachingPainInput" min="0" max="10" step="1" value="2">
+                            </div>
+                            <div class="overlay-metric-slider" title="Anxiety scale 0–10">
+                                <label for="teachingAnxietyInput">Anxiety <span id="teachingAnxietyValue">2</span></label>
+                                <input type="range" id="teachingAnxietyInput" min="0" max="10" step="1" value="2">
+                            </div>
+                            <div class="overlay-metric-slider" title="Comfort scale 1–5">
+                                <label for="teachingComfortInput">Comfort (1–5) <span id="teachingComfortValue">4</span></label>
+                                <input type="range" id="teachingComfortInput" min="1" max="5" step="1" value="4">
+                            </div>
+                            <div class="manual-mode-actions">
+                                <button class="secondary-btn" id="teachingMetricsResetBtn" type="button">Reset to Defaults</button>
+                                <button class="secondary-btn" id="teachingMetricsApplyBtn" type="button">Apply Settings</button>
+                            </div>
+                        </section>
+                        <section>
+                            <h3 class="overlay-section-title">Event Cards (1–4)</h3>
+                            <div class="overlay-event-grid" id="teachingEventGrid" role="group" aria-label="Event Cards"></div>
+                        </section>
+                        <section>
+                            <h3 class="overlay-section-title">Scenario Quick Select</h3>
+                            <div class="overlay-field">
+                                <label for="teachingScenarioSelect">Scenario</label>
+                                <select id="teachingScenarioSelect" aria-label="Select scenario">
+                                    <option value="off" selected>Off</option>
+                                    <option value="scenario_0">Scenario 0 - Keyboard expression practice</option>
+                                    <option value="scenario_1">Scenario 1 - No pain at 15th min</option>
+                                    <option value="scenario_2">Scenario 2 - Moderate / severe pain</option>
+                                </select>
+                            </div>
+                            <div class="overlay-field" style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <span style="opacity:0.8; font-size:11px; flex:1; min-width:120px;">Quick Select:</span>
+                                <button type="button" id="quickSelectS1" style="font-size:11px; padding:4px 10px; border-radius:7px; border:1px solid rgba(245,158,11,0.5); background:rgba(245,158,11,0.15); color:#ffe3b0; cursor:pointer; font-weight:600;" title="Select Scenario 1 (F7)">S1 · No Pain (F7)</button>
+                                <button type="button" id="quickSelectS2" style="font-size:11px; padding:4px 10px; border-radius:7px; border:1px solid rgba(239,68,68,0.5); background:rgba(239,68,68,0.15); color:#ffd0d0; cursor:pointer; font-weight:600;" title="Select Scenario 2 (F8)">S2 · Severe Pain (F8)</button>
+                                <button type="button" id="quickSelectOff" style="font-size:11px; padding:4px 10px; border-radius:7px; border:1px solid rgba(255,255,255,0.3); background:rgba(255,255,255,0.08); color:#aaa; cursor:pointer; font-weight:600;" title="Turn Off Scenario (F9)">Off (F9)</button>
+                            </div>
+                            <div class="overlay-field" style="margin-top:6px; display:flex; align-items:center; justify-content:space-between;">
+                                <span style="opacity:0.8; font-size:11px;">📊 Click S1/S2 above or press F7/F8 to view flowchart</span>
+                                <button type="button" onclick="openScenarioFlowChart(document.getElementById('teachingScenarioSelect')?.value || 's1')" style="font-size:11px; padding:3px 9px; border-radius:7px; border:1px solid rgba(95,227,255,0.35); background:rgba(95,227,255,0.1); color:#a5f3ff; cursor:pointer;" title="View scenario flowchart">📊 Chart</button>
+                            </div>
+                            <div class="overlay-field" style="margin-top:8px;">
+                                <label for="nursingScenarioVoiceSelect">Patient Voice / 患者聲音:</label>
+                                <select id="nursingScenarioVoiceSelect">
+                                    <option value="azure_man_8_tracks">English (Male)</option>
+                                    <option value="azure_cantonese_oldman_8_tracks">Cantonese / 廣東話 (Male)</option>
+                                </select>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+<div id="scenarioFlowModal" role="dialog" aria-modal="true" aria-label="Scenario Flowchart Quick Reference">
+    <div class="sf-backdrop"></div>
+    <div class="sf-panel">
+        <div class="sf-header">
+            <span class="sf-header-title">Scenario Quick Reference</span>
+            <div class="sf-tab-row">
+                <button class="sf-tab-btn active s1" data-sf-tab="s1" title="Click to select Scenario 1 (F7)">S1 · No Pain</button>
+                <button class="sf-tab-btn s2" data-sf-tab="s2" title="Click to select Scenario 2 (F8)">S2 · Severe Pain</button>
+            </div>
+            <button class="sf-close-btn" title="Close (Esc)">✕</button>
+        </div>
+        <div class="sf-body">
+            <div class="sf-flow-panel active" data-sf-panel="s1">
+                <div class="sf-scenario-title s1">S1 · No pain at 15th min &nbsp;·&nbsp; 虛擬時間 ×5 → ×15</div>
+                <div class="sf-connector">
+                    <div class="sf-card sf-card-baseline">
+                        <img class="sf-avatar" src="/static/assets/avatar/baseline.png" alt="Baseline patient">
+                        <div class="sf-card-info">
+                            <span class="sf-card-label">Stage 1.1 · Baseline</span>
+                            <span class="sf-card-name">Calm &amp; Comfortable</span>
+                            <div class="sf-vitals">
+                                <span class="sf-vital-pill hr">HR 89</span>
+                                <span class="sf-vital-pill bp">BP 115/73</span>
+                                <span class="sf-vital-pill spo2">SpO₂ 99%</span>
+                                <span class="sf-vital-pill rr">RR 18</span>
+                                <span class="sf-vital-pill pain">Pain 0 · Anxiety 0</span>
+                            </div>
+                            <div class="sf-meta-row">
+                                <span class="sf-time-chip">⏱ 00:00 · 5×</span>
+                                <span class="sf-track-chip">🎵 Track 01</span>
+                            </div>
+                            <div class="sf-quote">"Hi, nurse. Wow, a robotic massage? Is that really useful for me?"</div>
+                        </div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <span class="sf-connector-label">1 real min → virtual 05:00</span>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-card sf-card-stage12-s1">
+                        <img class="sf-avatar" src="/static/assets/avatar/baseline.png" alt="Stage 1.2 patient">
+                        <div class="sf-card-info">
+                            <span class="sf-card-label">Stage 1.2 · 5 virtual min</span>
+                            <span class="sf-card-name">Improving &amp; Relaxed</span>
+                            <div class="sf-vitals">
+                                <span class="sf-vital-pill hr">HR 86</span>
+                                <span class="sf-vital-pill bp">BP 98/65</span>
+                                <span class="sf-vital-pill spo2">SpO₂ 97%</span>
+                                <span class="sf-vital-pill rr">RR 14</span>
+                                <span class="sf-vital-pill pain">Pain 0 · Comfort 3</span>
+                            </div>
+                            <div class="sf-meta-row">
+                                <span class="sf-time-chip">⏱ 05:00 · 15×</span>
+                                <span class="sf-track-chip">🎵 Track 02</span>
+                            </div>
+                            <div class="sf-quote">"I really feel like my body and blood are circulating! So relaxing!"</div>
+                        </div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-decision">
+                        <div class="sf-decision-diamond"><span class="sf-decision-inner">STOP?</span></div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-branch-row">
+                        <div class="sf-branch-col">
+                            <span class="sf-branch-label stop">YES · Stop</span>
+                            <div class="sf-card sf-card-stop">
+                                <img class="sf-avatar" src="/static/assets/avatar/mild_anxiety.png" alt="Stop outcome">
+                                <div class="sf-card-info">
+                                    <span class="sf-card-label">1.3.a · Stop Outcome</span>
+                                    <span class="sf-card-name">Mild Anxiety</span>
+                                    <div class="sf-vitals">
+                                        <span class="sf-vital-pill hr">HR 88</span>
+                                        <span class="sf-vital-pill bp">BP 103/66</span>
+                                        <span class="sf-vital-pill spo2">SpO₂ 97%</span>
+                                        <span class="sf-vital-pill pain">Pain 0 · Anxiety 2 · Comfort 0</span>
+                                    </div>
+                                    <div class="sf-meta-row">
+                                        <span class="sf-time-chip">⏱ 05:00 🔒</span>
+                                        <span class="sf-track-chip">🎵 Track 03</span>
+                                    </div>
+                                    <div class="sf-quote">"Why are you stopping it? I'm just starting to feel it working!"</div>
+                                </div>
+                            </div>
+                            <div class="sf-connector-line"></div>
+                            <span class="sf-debrief-badge">→ Debriefing</span>
+                        </div>
+                        <div class="sf-branch-col">
+                            <span class="sf-branch-label continue">NO · Continue</span>
+                            <div class="sf-sub-branch">
+                                <div class="sf-card sf-card-intermediate">
+                                    <img class="sf-avatar" src="/static/assets/avatar/mild_pain.png" alt="Intermediate state">
+                                    <div class="sf-card-info">
+                                        <span class="sf-card-label">1.3.b.1 · Intermediate</span>
+                                        <span class="sf-card-name">Early Deterioration</span>
+                                        <div class="sf-vitals">
+                                            <span class="sf-vital-pill hr">HR 102</span>
+                                            <span class="sf-vital-pill bp">BP 115/72</span>
+                                            <span class="sf-vital-pill spo2">SpO₂ 95%</span>
+                                            <span class="sf-vital-pill rr">RR 20</span>
+                                            <span class="sf-vital-pill pain">Pain 2 · Anxiety 3 · Comfort 1</span>
+                                        </div>
+                                        <div class="sf-meta-row">
+                                            <span class="sf-time-chip">⏱ 20:00 🔒</span>
+                                            <span class="sf-track-chip">🎵 Track 04</span>
+                                        </div>
+                                        <div class="sf-quote">"…some kind of pain in my left leg… I can't catch my breath."</div>
+                                    </div>
+                                </div>
+                                <div class="sf-connector-line"></div>
+                                <span class="sf-connector-label">Stop or continue → 30 sec later</span>
+                                <div class="sf-connector-line"></div>
+                                <div class="sf-card sf-card-panic">
+                                    <img class="sf-avatar" src="/static/assets/avatar/high_anxiety.png" alt="Progression outcome">
+                                    <div class="sf-card-info">
+                                        <span class="sf-card-label">1.3.b.2 · Progression Outcome</span>
+                                        <span class="sf-card-name">Panic / High Anxiety</span>
+                                        <div class="sf-vitals">
+                                            <span class="sf-vital-pill hr">HR 115</span>
+                                            <span class="sf-vital-pill bp">BP 116/76</span>
+                                            <span class="sf-vital-pill spo2">SpO₂ 94%</span>
+                                            <span class="sf-vital-pill rr">RR 22</span>
+                                            <span class="sf-vital-pill pain">Pain 2 · Anxiety 4 · Comfort 1</span>
+                                        </div>
+                                        <div class="sf-meta-row">
+                                            <span class="sf-time-chip">⏱ 20:00 🔒</span>
+                                            <span class="sf-track-chip">🎵 Track 05</span>
+                                        </div>
+                                        <div class="sf-quote">"Nurse! Help me! It's getting harder to breathe. I can't catch it!!"</div>
+                                    </div>
+                                </div>
+                                <div class="sf-connector-line"></div>
+                                <span class="sf-debrief-badge">→ Debriefing</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="sf-flow-panel" data-sf-panel="s2">
+                <div class="sf-scenario-title s2">S2 · Moderate / Severe Pain &nbsp;·&nbsp; 虛擬時間 ×5 → ×15</div>
+                <div class="sf-connector">
+                    <div class="sf-card sf-card-baseline">
+                        <img class="sf-avatar" src="/static/assets/avatar/baseline.png" alt="Baseline patient">
+                        <div class="sf-card-info">
+                            <span class="sf-card-label">Stage 1.1 · Baseline</span>
+                            <span class="sf-card-name">Calm &amp; Comfortable</span>
+                            <div class="sf-vitals">
+                                <span class="sf-vital-pill hr">HR 89</span>
+                                <span class="sf-vital-pill bp">BP 115/73</span>
+                                <span class="sf-vital-pill spo2">SpO₂ 99%</span>
+                                <span class="sf-vital-pill rr">RR 18</span>
+                                <span class="sf-vital-pill pain">Pain 0 · Anxiety 0</span>
+                            </div>
+                            <div class="sf-meta-row">
+                                <span class="sf-time-chip">⏱ 00:00 · 5×</span>
+                                <span class="sf-track-chip">🎵 Track 01</span>
+                            </div>
+                            <div class="sf-quote">"Hi, nurse. Wow, a robotic massage? Is that really useful for me?"</div>
+                        </div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <span class="sf-connector-label">1 real min → virtual 05:00</span>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-card sf-card-stage12-s2">
+                        <img class="sf-avatar" src="/static/assets/avatar/high_anxiety.png" alt="Stage 1.2 S2 patient">
+                        <div class="sf-card-info">
+                            <span class="sf-card-label">Stage 1.2 · 5 virtual min</span>
+                            <span class="sf-card-name">High Anxiety + Severe Pain</span>
+                            <div class="sf-vitals">
+                                <span class="sf-vital-pill hr">HR 103</span>
+                                <span class="sf-vital-pill bp">BP 122/84</span>
+                                <span class="sf-vital-pill spo2">SpO₂ 94%</span>
+                                <span class="sf-vital-pill rr">RR 24</span>
+                                <span class="sf-vital-pill pain">Pain 5 · Anxiety 4 · Comfort 0</span>
+                            </div>
+                            <div class="sf-meta-row">
+                                <span class="sf-time-chip">⏱ 05:00 · 15×</span>
+                                <span class="sf-track-chip">🎵 Track 06</span>
+                            </div>
+                            <div class="sf-quote">"My chest is feeling a little tight now. But I can still handle it… continue!"</div>
+                        </div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-decision">
+                        <div class="sf-decision-diamond"><span class="sf-decision-inner">STOP?</span></div>
+                    </div>
+                    <div class="sf-connector-line"></div>
+                    <div class="sf-branch-row">
+                        <div class="sf-branch-col">
+                            <span class="sf-branch-label stop">YES · Stop</span>
+                            <div class="sf-card sf-card-stop">
+                                <img class="sf-avatar" src="/static/assets/avatar/moderate_pain.png" alt="Stop outcome S2">
+                                <div class="sf-card-info">
+                                    <span class="sf-card-label">1.3.a · Stop Outcome</span>
+                                    <span class="sf-card-name">Moderate Pain</span>
+                                    <div class="sf-vitals">
+                                        <span class="sf-vital-pill hr">HR 101–121</span>
+                                        <span class="sf-vital-pill bp">BP 101/83</span>
+                                        <span class="sf-vital-pill spo2">SpO₂ 94%</span>
+                                        <span class="sf-vital-pill rr">RR 22</span>
+                                        <span class="sf-vital-pill pain">Pain 3 · Anxiety 2 · Comfort 0</span>
+                                    </div>
+                                    <div class="sf-meta-row">
+                                        <span class="sf-time-chip">⏱ 05:00 🔒</span>
+                                        <span class="sf-track-chip">🎵 Track 07</span>
+                                    </div>
+                                    <div class="sf-quote">"Thanks for stopping! I still can't breathe good… Is something wrong?"</div>
+                                </div>
+                            </div>
+                            <div class="sf-connector-line"></div>
+                            <span class="sf-debrief-badge">→ Debriefing</span>
+                        </div>
+                        <div class="sf-branch-col">
+                            <span class="sf-branch-label continue">NO · Continue</span>
+                            <div class="sf-card sf-card-panic">
+                                <img class="sf-avatar" src="/static/assets/avatar/severe_pain.png" alt="Severe pain S2">
+                                <div class="sf-card-info">
+                                    <span class="sf-card-label">1.3.b · Continue Outcome</span>
+                                    <span class="sf-card-name">Severe Pain &amp; Panic</span>
+                                    <div class="sf-vitals">
+                                        <span class="sf-vital-pill hr">HR 119</span>
+                                        <span class="sf-vital-pill bp">BP 143/95</span>
+                                        <span class="sf-vital-pill spo2">SpO₂ 93%</span>
+                                        <span class="sf-vital-pill rr">RR 26</span>
+                                        <span class="sf-vital-pill pain">Pain 5 · Anxiety 5 · Comfort 0</span>
+                                    </div>
+                                    <div class="sf-meta-row">
+                                        <span class="sf-time-chip">⏱ 20:00 🔒</span>
+                                        <span class="sf-track-chip">🎵 Track 08</span>
+                                    </div>
+                                    <div class="sf-quote">"My left leg hurts so bad! My chest is tight! I can't breathe at all!!"</div>
+                                </div>
+                            </div>
+                            <div class="sf-connector-line"></div>
+                            <span class="sf-debrief-badge">→ Debriefing</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="hidden-original">
+    <textarea id="userInput" aria-hidden="true"></textarea>
+    <button id="sendButton" aria-hidden="true"></button>
+    <button id="voiceButton" aria-hidden="true"></button>
+    <button id="playButton" aria-hidden="true"></button>
+    <button id="stopButton" aria-hidden="true"></button>
+    <div class="messages-area" id="responseBox"></div>
+    <div class="status-dot" id="statusDot"></div>
+    <div class="speaking-indicator" id="speakingIndicator">
+        <span class="animal-dot">🦊</span>
+        <span class="animal-dot">🐿️</span>
+        <span class="animal-dot">🐰</span>
+        <span>正在朗讀</span>
+    </div>
+    <select id="bodyPartSelect"></select>
+    <select id="actionSelect"></select>
+    <select id="intensitySelect"></select>
+    <select id="durationSelect"></select>
+    <button id="quickPresetBtn"></button>
+    <button id="executeManualBtn"></button>
+    <input type="checkbox" id="autoSpeak" aria-hidden="true" hidden>
+    <select id="voiceSelect" aria-hidden="true" hidden>
+        <option value="disabled" selected>TTS Disabled</option>
+    </select>
+    <input type="range" id="speechRate" min="50" max="200" value="100" aria-hidden="true" hidden>
+    <span id="speechRateValue" aria-hidden="true" hidden>100%</span>
+    <div class="stt-provider-indicator-container" id="sttProviderContainer" style="display: none;">
+        <span class="stt-icon">🎤</span>
+        <span class="stt-provider-indicator" id="sttProviderIndicator">--</span>
+    </div>
+    <span id="statTodayCount"></span>
+    <span id="statRemaining"></span>
+    <span id="statFavoritePart"></span>
+    <span id="statConsecutive"></span>
+    <button id="mobileParamsBtn"></button>
+    <div class="params-drawer" id="paramsDrawer"></div>
+    <button id="closeDrawer"></button>
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+    <button id="drawerQuickPresetBtn"></button>
+    <button id="drawerExecuteBtn"></button>
+    <div class="fox-assistant" id="nurseAssistant"></div>
+    <div id="autoListeningIndicator" class="auto-listening-indicator">
+        <div class="listening-animation">
+            <span class="listening-dot"></span>
+            <span class="listening-dot"></span>
+            <span class="listening-dot"></span>
+        </div>
+        <div class="listening-status">
+            <span class="listening-text">持續聆聽</span>
+            <span class="listening-subtext">準備好了</span>
+        </div>
+    </div>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+            <div class="loading-text">載入中...</div>
+        </div>
+    </div>
+    <div class="forest-bg" id="forestBg"></div>
+</div>
+
+<div class="settings-panel" id="settingsPanel">
+      <div class="settings-header">
+          <div class="settings-title" data-i18n="settingsTitle">系統設定</div>
+          <button class="close-settings" id="closeSettings">✕</button>
+      </div>
+      <div class="settings-content">
+          <div class="setting-group">
+              <label class="setting-label"><span>⚡</span> <span>Quick Start Mode</span></label>
+              <div class="setup-mode-toggle">
+                  <label class="toggle-switch">
+                      <input type="checkbox" id="quickStartModeToggle" checked>
+                      <span class="slider"></span>
+                  </label>
+                  <div>
+                      <div class="setup-mode-label">快速開始模式</div>
+                      <div class="setup-mode-desc">隱藏複雜設定，直接使用預設(揉捏,中度,5分)</div>
+                  </div>
+              </div>
+          </div>
+          
+          <div class="setting-group">
+                <label class="setting-label" for="languageSelect"><span>🌐</span> <span data-i18n="languageLabel">語言 / Language</span></label>
+                <select id="languageSelect" class="setting-select">
+                    <option value="zh">繁體中文 (Traditional Chinese)</option>
+                    <option value="en">English</option>
+                </select>
+                <p class="setting-info" data-i18n="languageInfo">選擇介面語言</p>
+          </div>
+          <div class="setting-group">
+                <label class="setting-label" for="robotIpInput"><span>🤖</span> <span data-i18n="robotConnectionLabel">UR10e 機械臂連接</span></label>
+                <p class="setting-info" id="robotControlModeInfo" data-i18n="robotControlModeInfo">Local Mode RTDE IO control. Connect robot before real massage; otherwise simulation mode is used.</p>
+                <input type="text" id="robotIpInput" data-i18n-placeholder="robotIpPlaceholder" placeholder="192.168.1.10" value="192.168.1.10">
+                <button id="robotConnectBtn" class="primary-btn" data-i18n="connectRobotBtn">連接機械臂</button>
+                <button id="robotDisconnectBtn" class="secondary-btn" data-i18n="disconnectRobotBtn">斷開連接</button>
+                <p class="setting-info">
+                    <span id="robotConnectionStatus" data-i18n="robotNotConnected">⚪ 未連接</span>
+                    <span id="robotApiStatusSettings" style="margin-left: 16px; color: #999;">API: -</span>
+                    <span id="robotRtdeIoStatus" style="margin-left: 16px; color: #999;" data-i18n="rtdeIoStatusLabel">RTDE IO</span>
+                </p>
+          </div>
+
+          <div class="setting-group">
+                <label class="setting-label" for="voiceLanguageSelect"><span>🗣️</span> <span>Voice Language</span></label>
+                <select id="voiceLanguageSelect" class="setting-select">
+                    <option value="zh">廣東話 (Cantonese)</option>
+                    <option value="en">English</option>
+                </select>
+                <p class="setting-info">語音識別與語音回應語言</p>
+          </div>
+          <div class="setting-group">
+                <label class="setting-label" for="asrEngineSelect"><span>🗣️</span> <span data-i18n="asrEngineLabel">語音識別引擎</span></label>
+                <select id="asrEngineSelect">
+                    <option value="browser" selected data-i18n="asrBrowser">Browser Web Speech / 瀏覽器識別</option>
+                    <option value="azure-speech-sdk">Azure Speech SDK / Azure 語音服務</option>
+                </select>
+                <p class="setting-info" id="asrInfo" data-i18n="asrInfoBrowser">使用瀏覽器內建語音識別</p>
+          </div>
+          <div class="setting-group">
+                <label class="setting-label"><span>⏱️</span> <span data-i18n="sentenceDetectionLabel">語句結束檢測</span></label>
+                <label for="confidenceTimeoutSlider" class="setting-sub-label" data-i18n="highConfidenceLabel">高信心延遲 (ms)</label>
+                <input type="range" id="confidenceTimeoutSlider" min="500" max="2000" step="100" value="800">
+                <span id="confidenceTimeoutValue" class="setting-meter">800 ms</span>
+                <label for="silenceThresholdSlider" class="setting-sub-label" data-i18n="silenceTimeoutLabel">靜音超時 (ms)</label>
+                <input type="range" id="silenceThresholdSlider" min="1000" max="3000" step="100" value="1500">
+                <span id="silenceThresholdValue" class="setting-meter">1500 ms</span>
+          </div>
+          <div class="setting-group">
+                <label class="setting-label"><span>🎙️</span> <span data-i18n="micCalibrationLabel">麥克風靈敏度</span></label>
+                <button id="calibrateMicBtn" class="primary-btn" data-i18n="calibrateMicBtn">校準麥克風</button>
+                <p class="setting-info" id="micCalibrationInfo" data-i18n="micCalibrationInfo">點擊按鈕並在安靜環境中等待5秒</p>
+          </div>
+          <div class="setting-group">
+                <label class="setting-label"><span>🎤</span> <span data-i18n="wakeWordLabel">語音喚醒</span></label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="wakeWordToggle" checked>
+                    <label for="wakeWordToggle" class="checkbox-label" data-i18n="wakeWordDesc">啟用喚醒詞「按摩設定」</label>
+                </div>
+                <p class="setting-info listening-mode-info">
+                    <span id="listeningModeDesc" data-i18n="wakeWordHint">✅ 講「按摩設定」開始設定</span>
+                </p>
+                <button id="restartWakeWordBtn" class="secondary-btn" disabled data-i18n="restartWakeWordBtn">🔄 重啟語音檢測</button>
+          </div>
+
+      </div>
+  </div>
+
+  <div class="overlay" id="overlay"></div>
+
+  <script src="/static/i18n.js?v=9"></script>
+  <script src="/static/audio_processor.js"></script>
+  <script src="/static/azure_service_monitor.js"></script>
+  <script src="/static/stt-service.js?v=1"></script>
+  <script src="/static/src/ui/Components.js?v=1"></script>
+  <script type="module" src="/static/year65-ui.js?v=7"></script>
+  <script src="/static/app.js?v=109"></script>
+  <script src="/static/src/nursing/ScenarioFlowChart.js?v=2"></script>
+  <script type="module" src="/static/main.module.js?v=101"></script>
+</body>
+</html>

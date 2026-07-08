@@ -1,0 +1,50 @@
+# Minimal ServoJ stability test (NO force, NO soft_land, NO RTDE)
+DT = 0.02
+GAIN = 120
+LOOK = 0.12
+JUMP = 0.6  # rad
+
+def joint_dist(q1, q2):
+    local d0 = q1[0] - q2[0]
+    local d1 = q1[1] - q2[1]
+    local d2 = q1[2] - q2[2]
+    local d3 = q1[3] - q2[3]
+    local d4 = q1[4] - q2[4]
+    local d5 = q1[5] - q2[5]
+    return sqrt(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 + d4 * d4 + d5 * d5)
+end
+
+local start = get_actual_tcp_pose()
+local rx = start[3]
+local ry = start[4]
+local rz = start[5]
+
+local last_q = get_actual_joint_positions()
+local t = 0.0
+
+while t < 5.0:
+    # 2mm circle, very gentle
+    local r = 0.002
+    local f = 0.3
+    local dx = r * cos(2 * 3.14159 * f * t)
+    local dy = r * sin(2 * 3.14159 * f * t)
+
+    local tgt = p[start[0] + dx, start[1] + dy, start[2], rx, ry, rz]
+
+    # prefer near solution
+    local q = get_inverse_kin(tgt, last_q)
+    local qc = get_actual_joint_positions()
+
+    if joint_dist(q, qc) > JUMP:
+        textmsg("IK JUMP! dist=", joint_dist(q, qc))
+        stopj(2.0)
+        break
+    end
+
+    servoj(q, t = DT, lookahead_time = LOOK, gain = GAIN)
+    last_q = q
+    sleep(DT)
+    t = t + DT
+end
+
+stopj(2.0)

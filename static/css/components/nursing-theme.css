@@ -1,0 +1,37 @@
+/* ===== NURSING SIMULATION DESIGN TOKENS =====
+ * Purpose: Define premium dark + glassmorphism aesthetic variables
+ * Based on: photos/65years_new.jpg & UI_after_massage_redesign.md
+ */
+
+:root {
+    /* Backgrounds */
+    --nursing-bg-0: #0b1220;
+    /* Deepest dark */
+    --nursing-bg-1: #0f172a;
+    /* Main background */
+    --nursing-bg-2: #1e293b;
+    /* Gradient secondary */
+
+    /* Glassmorphism */
+    --nursing-glass-bg: rgba(15, 23, 42, 0.55);
+    --nursing-glass-border: rgba(255, 255, 255, 0.14);
+    --nursing-glass-blur: 16px;
+    --nursing-shadow-1: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+    /* Typography */
+    --nursing-text-1: rgba(255, 255, 255, 0.92);
+    /* Titles/Values */
+    --nursing-text-2: rgba(255, 255, 255, 0.72);
+    /* Labels */
+    --nursing-text-3: rgba(255, 255, 255, 0.55);
+    /* Auxiliary */
+
+    /* Metric Colors (Neon feel) */
+    --nursing-color-hr: #ff4d4d;
+    --nursing-color-bp: #4da3ff;
+    --nursing-color-rr: #2ee59d;
+    --nursing-color-spo2: #2ad4ff;
+
+    /* Glows */
+    --nursing-glow-soft: 0 0 12px rgba(255, 255, 255, 0.15);
+}

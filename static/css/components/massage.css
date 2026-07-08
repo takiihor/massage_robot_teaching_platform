@@ -1,0 +1,338 @@
+        /* ===== MASSAGE MODE ===== */
+        .massage-mode {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            background: white;
+            /* Reserve space for Teaching Top Bar */
+            padding: var(--teaching-topbar-h, 96px) 40px 40px;
+            position: relative;
+            /* Fix for absolute children */
+        }
+
+        .massage-mode.active {
+            display: flex;
+        }
+
+        .avatar-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 40px;
+        }
+
+        .avatar-container {
+            width: 342px;
+            height: 707px;
+            border-radius: 0;
+            border: none;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            box-shadow: none;
+            margin-bottom: 16px;
+        }
+
+        .avatar-img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .comfort-label {
+            display: inline-block;
+            padding: 8px 24px;
+            border: 2px solid var(--accent-teal);
+            border-radius: 20px;
+            color: var(--accent-teal);
+            font-size: 16px;
+            font-weight: 500;
+            background: white;
+        }
+
+        .feelings-section {
+            background: #f8f9fa;
+            border-radius: 16px;
+            padding: 20px 28px;
+            margin-top: 24px;
+        }
+
+        .feelings-title {
+            text-align: center;
+            font-size: 14px;
+            color: var(--text-gray);
+            margin-bottom: 16px;
+        }
+
+        .feelings-grid {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        /* Hide feeling buttons under the virtual patient (per nursing UI) */
+        .feelings-section {
+            display: none;
+        }
+
+        .feeling-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 14px;
+            border: 2px solid transparent;
+            border-radius: 12px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 65px;
+        }
+
+        .feeling-btn:hover {
+            background: #f0f0f0;
+        }
+
+        .feeling-btn.active {
+            border-color: var(--accent-teal);
+            background: rgba(38, 166, 154, 0.1);
+        }
+
+        .feeling-emoji {
+            width: 52px;
+            height: 52px;
+            object-fit: contain;
+        }
+
+        .feeling-text {
+            font-size: 12px;
+            color: var(--text-dark);
+        }
+
+        .feeling-btn.active .feeling-text {
+            color: var(--accent-teal);
+            font-weight: 600;
+        }
+
+        /* ===== TORQUE MONITORING SECTION ===== */
+        .torque-section {
+            background: #f8f9fa;
+            border-radius: 16px;
+            padding: 20px 28px;
+            margin-top: 16px;
+        }
+
+        .torque-title {
+            text-align: center;
+            font-size: 14px;
+            color: var(--text-gray);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .torque-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .torque-canvas-wrapper {
+            background: white;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        #torqueChart {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .torque-values {
+            display: flex;
+            gap: 16px;
+            justify-content: space-around;
+        }
+
+        .torque-value-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 12px;
+            background: white;
+            border-radius: 8px;
+            flex: 1;
+        }
+
+        .torque-label {
+            font-size: 11px;
+            color: var(--text-gray);
+            font-weight: 500;
+        }
+
+        .torque-reading {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-dark);
+            font-family: 'Courier New', monospace;
+        }
+
+        .torque-status {
+            font-size: 16px;
+        }
+
+        .torque-info {
+            text-align: center;
+            padding: 8px;
+            background: rgba(255, 193, 7, 0.1);
+            border-radius: 6px;
+        }
+
+        .info-text {
+            font-size: 11px;
+            color: #856404;
+            font-weight: 500;
+        }
+
+        /* ===== TORQUE MONITOR DIALOG ===== */
+        .torque-dialog {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            width: 450px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            display: none;
+        }
+
+        .torque-dialog-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px 12px 0 0;
+            cursor: move;
+        }
+
+        .torque-dialog-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+        }
+
+        .torque-dialog-close {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .torque-dialog-close:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .torque-dialog-content {
+            padding: 20px;
+        }
+
+        /* ===== RESPONSIVE & TOUCH OPTIMIZATIONS ===== */
+
+        /* Touch Device Optimizations */
+        @media (pointer: coarse) {
+            /* Ensure dialog close buttons meet touch target */
+            .torque-dialog-close {
+                width: 44px;
+                height: 44px;
+                font-size: 22px;
+            }
+
+            /* Increase touch targets for calibration buttons */
+            .calib-point-row .secondary-btn {
+                min-width: 80px;
+                min-height: 44px;
+                padding: 10px 12px;
+            }
+
+            .robot-btn-row .secondary-btn {
+                min-height: 44px;
+                padding: 12px 8px;
+            }
+        }
+
+        /* Mobile Responsive Styles */
+        @media (max-width: 767px) {
+            /* Resize avatar for mobile */
+            .avatar-container {
+                width: var(--avatar-size-md); /* 220px */
+                height: var(--avatar-size-md);
+                border: 4px solid var(--accent-teal);
+                margin-bottom: 12px;
+            }
+
+            .avatar-section {
+                margin-bottom: 24px;
+            }
+
+            .comfort-label {
+                font-size: 14px;
+                padding: 6px 20px;
+            }
+
+            /* Reduce torque dialog width on mobile */
+            .torque-dialog {
+                top: 60px;
+                right: 10px;
+                left: 10px;
+                width: auto;
+                max-width: none;
+            }
+        }
+
+        /* Tablet Responsive Styles */
+        @media (min-width: 768px) and (max-width: 1023px) {
+            .avatar-container {
+                width: 300px;
+                height: 300px;
+                border: 5px solid var(--accent-teal);
+            }
+
+            .torque-dialog {
+                top: 70px;
+                right: 16px;
+            }
+        }
+
+        /* Large Desktop Responsive Styles */
+        @media (min-width: 1280px) {
+            .avatar-container {
+                width: 400px;
+                height: 400px;
+            }
+
+            .comfort-label {
+                font-size: 18px;
+                padding: 10px 28px;
+            }
+
+            .torque-dialog {
+                width: 500px;
+            }
+        }

@@ -1,0 +1,6 @@
+ Program
+   Robot Program
+     RG Grip
+     Wait: 1.0
+     RG Grip
+     Wait: 1.0

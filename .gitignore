@@ -1,0 +1,37 @@
+# Secrets and local runtime configuration
+.env
+.env.*
+!.env.example
+certs/
+*.pem
+*.key
+*.crt
+
+# Runtime files
+*.pid
+*.log
+server.log
+massage_robot.pid
+__pycache__/
+*.py[cod]
+
+# Node / test artifacts
+node_modules/
+test-results/
+playwright-report/
+coverage/
+.nyc_output/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Archives generated for sharing
+*.zip
+*.tar
+*.tar.gz
+
+# Local assistant/tool settings
+.claude/

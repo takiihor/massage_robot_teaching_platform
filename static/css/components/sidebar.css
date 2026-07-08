@@ -1,0 +1,752 @@
+        /* ===== RIGHT SIDEBAR ===== */
+        .control-sidebar {
+            background: white;
+            border-left: 1px solid var(--border-color);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: scroll;
+            /* Always show scrollbar to prevent layout shift */
+            position: relative;
+            z-index: 10;
+            /* 確保在一般內容之上，但低於設定面板 / overlay */
+        }
+
+        .control-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            color: var(--text-gray);
+            font-weight: 500;
+        }
+
+        /* Sidebar Mode Switcher */
+        .sidebar-mode-switcher {
+            display: flex;
+            background: #f0f2f5;
+            padding: 4px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+
+        .sidebar-mode-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 12px 14px;
+            border-radius: 8px;
+            cursor: pointer !important;
+            background: transparent;
+            color: var(--text-gray);
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+            -ms-user-select: none !important;
+            position: relative;
+            z-index: 10;
+            width: 100%;
+            border: none;
+            pointer-events: auto !important;
+        }
+
+        .sidebar-mode-btn.active {
+            background: white;
+            color: var(--primary-blue);
+            font-weight: 600;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            pointer-events: auto !important;
+        }
+
+        .sidebar-mode-btn:hover:not(.active) {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Hide telemetry panel by default */
+        .robot-telemetry-panel {
+            display: none !important;
+        }
+
+        .robot-telemetry-panel.telemetry-visible {
+            display: block !important;
+        }
+
+        /* 確保整粒 pill 都可點：子元素不攔截滑鼠事件 */
+        .sidebar-mode-btn>* {
+            pointer-events: none !important;
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+        }
+
+        /* 游標統一是手指狀，不要變成文字游標 */
+        .sidebar-mode-btn,
+        .sidebar-mode-btn * {
+            cursor: pointer !important;
+        }
+
+        /* Massage Mode Grid */
+        .mode-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .mode-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 14px 6px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .mode-btn:hover {
+            border-color: var(--primary-blue);
+            background: #f8f9ff;
+        }
+
+        .mode-btn.active {
+            border-color: #FF9800;
+            background: #FFF8E1;
+        }
+
+        .mode-icon {
+            font-size: 18px;
+            color: var(--text-gray);
+        }
+
+        .mode-btn.active .mode-icon {
+            color: #FF9800;
+        }
+
+        .mode-text {
+            font-size: 11px;
+            color: var(--text-dark);
+        }
+
+        .mode-num {
+            font-size: 14px;
+            color: var(--text-gray);
+            line-height: 1;
+        }
+
+        .mode-btn.active .mode-num {
+            color: #FF9800;
+        }
+
+        /* Intensity Control */
+        .intensity-btns {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .intensity-btn {
+            padding: 12px;
+            border: none;
+            background: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: var(--text-dark);
+        }
+
+        .intensity-btn:not(:last-child) {
+            border-right: 1px solid var(--border-color);
+        }
+
+        .intensity-btn:hover {
+            background: #f5f5f5;
+        }
+
+        .intensity-btn.active {
+            background: #FFEBEE;
+            color: #E53935;
+            font-weight: 600;
+        }
+
+        .intensity-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .intensity-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .intensity-fill.low {
+            width: 33.33%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+        }
+
+        .intensity-fill.medium {
+            width: 66.66%;
+            background: linear-gradient(90deg, #4CAF50, #FFEB3B);
+        }
+
+        .intensity-fill.high {
+            width: 100%;
+            background: linear-gradient(90deg, #4CAF50, #FF9800, #f44336);
+        }
+
+        /* Duration Selection */
+        .duration-btns {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .duration-btn {
+            padding: 10px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: white;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: var(--text-dark);
+        }
+
+        .duration-btn:hover {
+            border-color: var(--accent-teal);
+            background: #f0f9f8;
+        }
+
+        .duration-btn.active {
+            border-color: var(--accent-teal);
+            background: #E0F2F1;
+            color: var(--accent-teal);
+            font-weight: 600;
+        }
+
+        /* Voice selection highlight - light transparent green */
+        .voice-highlight {
+            background: rgba(76, 175, 80, 0.25) !important;
+            border-color: #4CAF50 !important;
+            box-shadow: 0 0 8px rgba(76, 175, 80, 0.4);
+            transition: all 0.15s ease;
+        }
+
+        .voice-highlight .mode-icon,
+        .voice-highlight .mode-num,
+        .voice-highlight .mode-text,
+        .voice-highlight span {
+            color: #2E7D32 !important;
+        }
+
+        /* Start Button */
+        .start-btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--accent-teal);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .start-btn .start-icon {
+            width: 16px;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .start-btn:hover {
+            background: #00897B;
+        }
+
+        .start-btn.active {
+            background: #E53935;
+        }
+
+        /* Robot telemetry and stop */
+        .robot-telemetry {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: #f9fafb;
+        }
+
+        .robot-telemetry .status-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-gray);
+        }
+
+        .robot-telemetry .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #e0e0e0;
+        }
+
+        .robot-telemetry .status-dot.ok {
+            background: #2ecc71;
+            box-shadow: 0 0 0 4px rgba(46, 204, 113, 0.2);
+        }
+
+        .robot-telemetry .status-dot.bad {
+            background: #e74c3c;
+            box-shadow: 0 0 0 4px rgba(231, 76, 60, 0.2);
+        }
+
+        .robot-telemetry .robot-simple-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 12px;
+            color: var(--text-dark);
+        }
+
+        .robot-telemetry .robot-simple-info span {
+            padding: 6px 8px;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+        }
+
+        .robot-stop-btn {
+            width: 100%;
+            background: #e53935;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 6px 14px rgba(229, 57, 53, 0.25);
+            transition: transform 0.1s ease;
+        }
+
+        .robot-stop-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .robot-telemetry-panel {
+            margin-top: 10px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .robot-telemetry-panel.telemetry-disconnected {
+            opacity: 0.55;
+            filter: grayscale(0.2);
+        }
+
+        .robot-telemetry-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+
+        .robot-telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+
+        .telemetry-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-gray);
+        }
+
+        .telemetry-label {
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+
+        .telemetry-section-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--accent-teal);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-top: 4px;
+        }
+
+        /* Countdown Timer */
+        .countdown-section {
+            margin-top: 12px;
+        }
+
+        .countdown-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-gray);
+            margin-bottom: 6px;
+        }
+
+        .countdown-time {
+            font-weight: 600;
+            color: var(--accent-teal);
+            font-size: 14px;
+        }
+
+        .countdown-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .countdown-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, var(--accent-teal), #4CAF50);
+            transition: width 1s linear;
+        }
+
+        /* Sidebar Voice Section */
+        .sidebar-voice {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 14px;
+            min-height: 150px;
+        }
+
+        .sidebar-voice-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .sidebar-voice-title {
+            font-size: 13px;
+            color: var(--text-gray);
+        }
+
+        .sidebar-mic-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: var(--primary-blue);
+            border: none;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .sidebar-mic-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .sidebar-mic-btn.recording {
+            background: #E53935;
+            animation: pulse-recording 1s infinite;
+        }
+
+        .sidebar-voice-hint {
+            font-size: 12px;
+            color: var(--text-light);
+            text-align: center;
+            margin-top: auto;
+        }
+
+        /* ===== RESPONSIVE & TOUCH OPTIMIZATIONS ===== */
+
+        /* Touch Device Optimizations */
+        @media (pointer: coarse) {
+
+            /* Ensure all buttons meet 44px minimum touch target */
+            .mode-btn {
+                min-height: 44px;
+                min-width: 44px;
+                padding: 16px 8px;
+            }
+
+            .intensity-btn {
+                min-height: 44px;
+                padding: 14px 12px;
+            }
+
+            .duration-btn {
+                min-height: 44px;
+                padding: 12px 10px;
+            }
+
+            .start-btn {
+                min-height: 52px;
+                padding: 16px;
+                font-size: 16px;
+            }
+
+            .robot-stop-btn {
+                min-height: 44px;
+                padding: 14px;
+            }
+
+            .sidebar-mic-btn {
+                width: 44px;
+                height: 44px;
+            }
+
+            /* Increase tap area for sidebar mode switcher */
+            .sidebar-mode-btn {
+                min-height: 44px;
+                padding: 14px 16px;
+            }
+        }
+
+        /* Hover-capable devices only */
+        @media (hover: hover) and (pointer: fine) {
+            .mode-btn:hover {
+                border-color: var(--primary-blue);
+                background: #f8f9ff;
+            }
+
+            .sidebar-mode-btn:hover:not(.active) {
+                background: rgba(255, 255, 255, 0.5);
+            }
+
+            .sidebar-mic-btn:hover {
+                transform: scale(1.1);
+            }
+
+            .start-btn:hover {
+                background: #00897B;
+            }
+
+            .robot-stop-btn:hover {
+                transform: translateY(-1px);
+            }
+        }
+
+        /* Touch devices: Remove hover, add active states */
+        @media (hover: none) {
+            .mode-btn:hover {
+                border-color: var(--border-color);
+                background: white;
+            }
+
+            .mode-btn:active {
+                transform: scale(0.95);
+                background: #f0f0f0;
+            }
+
+            .sidebar-mode-btn:hover:not(.active) {
+                background: transparent;
+            }
+
+            .sidebar-mode-btn:active {
+                background: rgba(255, 255, 255, 0.8);
+            }
+
+            .sidebar-mic-btn:hover {
+                transform: none;
+            }
+
+            .sidebar-mic-btn:active {
+                transform: scale(0.95);
+            }
+
+            .start-btn:hover {
+                background: var(--accent-teal);
+            }
+
+            .start-btn:active {
+                transform: scale(0.98);
+            }
+
+            .robot-stop-btn:hover {
+                transform: none;
+            }
+
+            .robot-stop-btn:active {
+                transform: scale(0.98);
+            }
+        }
+
+        /* Mobile Responsive Styles */
+        @media (max-width: 767px) {
+            .control-sidebar {
+                padding: 16px;
+                gap: 16px;
+            }
+
+            .section-title {
+                font-size: 13px;
+            }
+
+            /* 2-column grid on mobile for mode buttons */
+            .mode-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+
+            .mode-btn {
+                padding: 18px 10px;
+            }
+
+            .mode-text {
+                font-size: 12px;
+            }
+
+            /* Keep intensity and duration as 3 columns but smaller */
+            .intensity-btn,
+            .duration-btn {
+                font-size: 13px;
+            }
+
+            /* Slightly reduce telemetry panel font size */
+            .robot-telemetry-grid {
+                font-size: 11px;
+            }
+
+            .telemetry-row {
+                font-size: 11px;
+            }
+        }
+
+        /* Tablet Responsive Styles */
+        @media (min-width: 768px) and (max-width: 1023px) {
+            .control-sidebar {
+                padding: 18px;
+                border-left: none;
+                border-top: 1px solid var(--border-color);
+                overflow-y: visible;
+                max-height: none;
+            }
+
+            /* 4-column grid on tablet */
+            .mode-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+
+        /* Large Desktop Responsive Styles */
+        @media (min-width: 1280px) {
+            .control-sidebar {
+                padding: 24px;
+                gap: 22px;
+            }
+
+            .section-title {
+                font-size: 15px;
+            }
+
+            .mode-btn {
+                padding: 16px 8px;
+            }
+
+            .start-btn {
+                padding: 16px;
+                font-size: 16px;
+            }
+        }
+
+/* ===== Countdown Timer Global Styles (for Year65 UI) ===== */
+/* Ensure countdown section is visible when active */
+.countdown-section[style*="display: block"],
+.countdown-section {
+    position: fixed;
+    top: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: 2px solid var(--primary-color);
+    border-radius: 16px;
+    padding: 16px 24px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    min-width: 300px;
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+.countdown-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.countdown-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.countdown-time {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--primary-color);
+    font-variant-numeric: tabular-nums;
+}
+
+.countdown-bar {
+    height: 8px;
+    background: rgba(74, 144, 226, 0.2);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.countdown-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+    transition: width 1s linear;
+    border-radius: 4px;
+}

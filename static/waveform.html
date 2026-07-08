@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clinical Monitor Simulation - Erase Bar Sweep</title>
+  <style>
+    body {
+      background-color: #111;
+      color: white;
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .monitor-frame {
+      background-color: #000;
+      border: 12px solid #222;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 900px;
+      padding: 20px 0;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+    }
+
+    .vital-row {
+      display: flex;
+      align-items: center;
+      height: 120px;
+      border-bottom: 1px solid #1a1a1a;
+      overflow: hidden;
+    }
+
+    .vital-row:last-child {
+      border-bottom: none;
+    }
+
+    .vital-text {
+      width: 200px;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .vital-label {
+      font-size: 14px;
+      text-transform: uppercase;
+      margin-bottom: -5px;
+    }
+
+    .vital-unit {
+      font-size: 12px;
+      opacity: 0.8;
+      margin-left: 5px;
+    }
+
+    .vital-value {
+      font-size: 64px;
+      font-weight: bold;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .vital-value-small {
+      font-size: 48px;
+    }
+
+    .waveform-container {
+      flex-grow: 1;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Waveform Colors */
+    .color-ecg { color: #4ade80; }
+    .color-bp { color: #f87171; }
+    .color-spo2 { color: #22d3ee; }
+
+    .stroke-ecg { stroke: #4ade80; }
+    .stroke-bp { stroke: #f87171; }
+    .stroke-spo2 { stroke: #22d3ee; }
+
+    /* Control Panel */
+    .controls {
+      background-color: #222;
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 20px;
+      width: 100%;
+      max-width: 860px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+    }
+
+    label {
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #aaa;
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="monitor-frame">
+    <div class="vital-row">
+      <div class="vital-text color-ecg">
+        <div class="vital-value" id="val-hr">80</div>
+        <div class="vital-label">Heart rate <span class="vital-unit">/min</span></div>
+      </div>
+      <div class="waveform-container">
+        <svg id="svg-hr" preserveAspectRatio="none">
+          <defs>
+            <path id="ecg-beat" d="M0,60 L10,60 C13,60 15,50 18,50 C21,50 23,60 25,60 L28,60 L31,70 L35,10 L40,80 L44,60 L52,60 C58,60 62,40 68,40 C75,40 78,60 85,60 L100,60" fill="none" class="stroke-ecg" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />
+            <mask id="sweep-mask-hr">
+              <rect width="10000" height="100" fill="white" />
+              <rect y="0" width="30" height="100" fill="black">
+                <animate id="anim-hr" attributeName="x" from="0" to="1000" dur="6s" repeatCount="indefinite" />
+              </rect>
+            </mask>
+          </defs>
+          <g id="group-hr" mask="url(#sweep-mask-hr)"></g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="vital-row">
+      <div class="vital-text color-bp">
+        <div class="vital-value vital-value-small"><span id="val-sbp">120</span>/<span id="val-dbp">80</span></div>
+        <div class="vital-label">Blood pressure <span class="vital-unit">mmHg</span></div>
+      </div>
+      <div class="waveform-container">
+        <svg id="svg-bp" preserveAspectRatio="none">
+          <defs>
+            <path id="bp-beat" d="M0,90 C10,90 15,15 30,15 C45,15 55,45 60,50 L63,75 L67,50 C80,60 95,85 100,90" fill="none" class="stroke-bp" stroke-width="2.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+            <mask id="sweep-mask-bp">
+              <rect width="10000" height="100" fill="white" />
+              <rect y="0" width="30" height="100" fill="black">
+                <animate id="anim-bp" attributeName="x" from="0" to="1000" dur="6s" repeatCount="indefinite" />
+              </rect>
+            </mask>
+          </defs>
+          <g id="group-bp" mask="url(#sweep-mask-bp)"></g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="vital-row">
+      <div class="vital-text color-spo2">
+        <div class="vital-value" id="val-spo2">98</div>
+        <div class="vital-label">SpO2 <span class="vital-unit">%</span></div>
+      </div>
+      <div class="waveform-container">
+        <svg id="svg-spo2" preserveAspectRatio="none">
+          <defs>
+            <path id="spo2-beat" d="M0,80 C10,80 20,20 35,20 C48,20 52,45 55,50 C58,55 60,60 62,60 C65,50 68,45 75,50 C85,60 90,80 100,80" fill="none" class="stroke-spo2" stroke-width="3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+            <mask id="sweep-mask-spo2">
+              <rect width="10000" height="100" fill="white" />
+              <rect y="0" width="30" height="100" fill="black">
+                <animate id="anim-spo2" attributeName="x" from="0" to="1000" dur="6s" repeatCount="indefinite" />
+              </rect>
+            </mask>
+          </defs>
+          <g id="group-spo2" mask="url(#sweep-mask-spo2)"></g>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control-group">
+      <label>Target Heart Rate: <span id="label-hr">80</span> bpm</label>
+      <input type="range" id="slider-hr" min="30" max="220" value="80">
+    </div>
+    <div class="control-group">
+      <label>Target Systolic BP: <span id="label-sbp">120</span> mmHg</label>
+      <input type="range" id="slider-sbp" min="50" max="200" value="120">
+    </div>
+    <div class="control-group">
+      <label>Target SpO2: <span id="label-spo2">98</span> %</label>
+      <input type="range" id="slider-spo2" min="70" max="100" value="98">
+    </div>
+  </div>
+
+  <script>
+    const SWEEP_TIME = 6; 
+    const BEAT_WIDTH = 100; 
+
+    const hrSlider = document.getElementById('slider-hr');
+    const sbpSlider = document.getElementById('slider-sbp');
+    const spo2Slider = document.getElementById('slider-spo2');
+
+    const groupHr = document.getElementById('group-hr');
+    const groupBp = document.getElementById('group-bp');
+    const groupSpo2 = document.getElementById('group-spo2');
+
+    let currentRenderedBeats = 0;
+    
+    let baseHr = parseInt(hrSlider.value);
+    let baseSbp = parseInt(sbpSlider.value);
+    let baseSpo2 = parseInt(spo2Slider.value);
+
+    function renderBeats(count) {
+      if (count === currentRenderedBeats) return; 
+      
+      let hrHTML = '';
+      let bpHTML = '';
+      let spo2HTML = '';
+
+      // We only need to render enough static beats to fill the screen once.
+      // The moving mask handles the illusion of animation.
+      for (let i = 0; i < count; i++) {
+        const offset = i * BEAT_WIDTH;
+        hrHTML += `<use href="#ecg-beat" x="${offset}"/>`;
+        bpHTML += `<use href="#bp-beat" x="${offset}"/>`;
+        spo2HTML += `<use href="#spo2-beat" x="${offset}"/>`;
+      }
+
+      groupHr.innerHTML = hrHTML;
+      groupBp.innerHTML = bpHTML;
+      groupSpo2.innerHTML = spo2HTML;
+      
+      currentRenderedBeats = count;
+    }
+
+    function updateBaselinesAndWaveforms() {
+      baseHr = parseInt(hrSlider.value);
+      baseSbp = parseInt(sbpSlider.value);
+      baseSpo2 = parseInt(spo2Slider.value);
+
+      document.getElementById('label-hr').innerText = baseHr;
+      document.getElementById('label-sbp').innerText = baseSbp;
+      document.getElementById('label-spo2').innerText = baseSpo2;
+
+      // Density Logic
+      const beatsOnScreen = (baseHr / 60) * SWEEP_TIME;
+      const viewBoxWidth = beatsOnScreen * BEAT_WIDTH;
+      
+      // Render just enough beats to cover the calculated width
+      const totalBeatsNeeded = Math.ceil(beatsOnScreen);
+      renderBeats(totalBeatsNeeded);
+
+      document.getElementById('svg-hr').setAttribute('viewBox', `0 0 ${viewBoxWidth} 100`);
+      document.getElementById('svg-bp').setAttribute('viewBox', `0 0 ${viewBoxWidth} 100`);
+      document.getElementById('svg-spo2').setAttribute('viewBox', `0 0 ${viewBoxWidth} 100`);
+
+      // Update the mask animations so the black rectangle sweeps across the new exact width
+      document.getElementById('anim-hr').setAttribute('to', viewBoxWidth);
+      document.getElementById('anim-bp').setAttribute('to', viewBoxWidth);
+      document.getElementById('anim-spo2').setAttribute('to', viewBoxWidth);
+      
+      simulateLiveVitals(); 
+    }
+
+    function simulateLiveVitals() {
+      const liveHr = baseHr + Math.floor(Math.random() * 5) - 2;
+      const liveSbp = baseSbp + Math.floor(Math.random() * 7) - 3;
+      const liveDbp = Math.round(baseSbp * 0.66) + Math.floor(Math.random() * 5) - 2;
+      let liveSpo2 = baseSpo2 + Math.floor(Math.random() * 3) - 1;
+      if (liveSpo2 > 100) liveSpo2 = 100;
+
+      document.getElementById('val-hr').innerText = liveHr;
+      document.getElementById('val-sbp').innerText = liveSbp;
+      document.getElementById('val-dbp').innerText = liveDbp;
+      document.getElementById('val-spo2').innerText = liveSpo2;
+    }
+
+    hrSlider.addEventListener('input', updateBaselinesAndWaveforms);
+    sbpSlider.addEventListener('input', updateBaselinesAndWaveforms);
+    spo2Slider.addEventListener('input', updateBaselinesAndWaveforms);
+
+    updateBaselinesAndWaveforms();
+    setInterval(simulateLiveVitals, 1500);
+
+  </script>
+</body>
+</html>

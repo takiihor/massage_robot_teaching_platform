@@ -1,0 +1,232 @@
+:root {
+    /* ===== Color System ===== */
+    /* Primary Colors */
+    --color-primary-blue: #4A90E2;
+    --color-primary-green: #4CAF50;
+    --color-accent-teal: #26A69A;
+    --color-error: #E53935;
+    --color-warning: #FF9800;
+    --color-success: #4CAF50;
+
+    /* Legacy color names (for backward compatibility) */
+    --primary-blue: var(--color-primary-blue);
+    --primary-green: var(--color-primary-green);
+    --accent-teal: var(--color-accent-teal);
+
+    /* Semantic Colors - Background */
+    --color-bg-base: #f5f7fa;
+    --color-bg-surface: #ffffff;
+    --color-bg-elevated: #fafbfc;
+    --color-bg-overlay: rgba(15, 23, 42, 0.25);
+
+    /* Legacy background names */
+    --bg-light: var(--color-bg-base);
+
+    /* Semantic Colors - Text */
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #4a4a4a;
+    --color-text-tertiary: #6b6b6b;
+    --color-text-inverse: #ffffff;
+
+    /* Legacy text names */
+    --text-dark: var(--color-text-primary);
+    --text-gray: var(--color-text-secondary);
+    --text-light: var(--color-text-tertiary);
+
+    /* Semantic Colors - Border */
+    --color-border: #a0a0a0;
+    --color-border-light: #c0c0c0;
+    --color-border-dark: #b0b0b0;
+    --border-color: var(--color-border);
+
+    /* Message Colors */
+    --color-user-msg-bg: #007AFF;
+    --color-ai-msg-bg: #f0f0f0;
+    --user-msg-bg: var(--color-user-msg-bg);
+    --ai-msg-bg: var(--color-ai-msg-bg);
+
+    /* ===== Spacing System (8px base) ===== */
+    --spacing-xs: 0.25rem;   /* 4px */
+    --spacing-sm: 0.5rem;    /* 8px */
+    --spacing-md: 1rem;      /* 16px */
+    --spacing-lg: 1.5rem;    /* 24px */
+    --spacing-xl: 2rem;      /* 32px */
+    --spacing-2xl: 3rem;     /* 48px */
+    --spacing-3xl: 4rem;     /* 64px */
+
+    /* ===== Z-Index Layer System ===== */
+    /* Base Layer (1-99) */
+    --z-base: 1;
+    --z-sidebar: 10;
+
+    /* Navigation Layer (100-199) */
+    --z-header: 100;
+    --z-dropdown: 150;
+
+    /* Fixed Elements (200-299) */
+    --z-sticky: 200;
+    --z-floating: 250;
+    --z-floating-button: 250;
+
+    /* Dialog Layer (300-399) */
+    --z-dialog: 300;
+    --z-tooltip: 350;
+
+    /* Overlay Layer (400-499) */
+    --z-overlay-backdrop: 400;
+    --z-overlay: 450;
+    --z-overlay-content: 450;
+
+    /* Modal Layer (500-599) */
+    --z-modal-backdrop: 500;
+    --z-modal: 550;
+
+    /* Toast/Notification Layer (600-699) */
+    --z-toast: 600;
+    --z-notification: 650;
+
+    /* Teaching/Tutorial Layer (700-799) */
+    --z-teaching-mask: 700;
+    --z-teaching-overlay: 750;
+    --z-teaching-content: 750;
+
+    /* Maximum Layer (1000+) */
+    --z-max: 9999;
+
+    /* ===== Layout Dimensions ===== */
+    --header-height: 61px;
+    --sidebar-width: 360px;
+    --teaching-topbar-h: 96px;
+    --teaching-topbar-height: var(--teaching-topbar-h);
+
+    /* Avatar Sizes */
+    --avatar-size-lg: 360px;
+    --avatar-size-md: 220px;
+    --avatar-size-sm: 120px;
+
+    /* ===== Shadows ===== */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 2px 12px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.15);
+    --shadow-xl: 0 12px 32px rgba(0, 0, 0, 0.2);
+
+    /* Legacy shadow names */
+    --card-shadow: var(--shadow-md);
+
+    /* ===== Border Radius ===== */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --radius-2xl: 24px;
+    --radius-full: 9999px;
+
+    /* ===== Transitions ===== */
+    --transition-fast: 150ms ease;
+    --transition-base: 200ms ease;
+    --transition-slow: 300ms ease;
+    --transition-slower: 500ms ease;
+
+    /* ===== Typography ===== */
+    --font-family-base: 'Noto Sans TC', -apple-system, BlinkMacSystemFont,
+                        'Segoe UI', 'PingFang TC', 'Microsoft JhengHei',
+                        'Helvetica Neue', Arial, sans-serif;
+    --font-family-mono: 'Courier New', Consolas, Monaco, 'Andale Mono', monospace;
+
+    /* Font Sizes */
+    --text-xs: 0.688rem;    /* 11px */
+    --text-sm: 0.813rem;    /* 13px */
+    --text-base: 0.875rem;  /* 14px */
+    --text-md: 1rem;        /* 16px */
+    --text-lg: 1.125rem;    /* 18px */
+    --text-xl: 1.25rem;     /* 20px */
+    --text-2xl: 1.5rem;     /* 24px */
+
+    /* ===== Breakpoints (for reference in JS) ===== */
+    --breakpoint-xs: 320px;
+    --breakpoint-sm: 640px;
+    --breakpoint-md: 768px;
+    --breakpoint-lg: 1024px;
+    --breakpoint-xl: 1280px;
+    --breakpoint-2xl: 1536px;
+
+    /* ===== Touch Target Sizes ===== */
+    --touch-target-min: 44px; /* iOS/Android minimum */
+}
+
+/* ===== Dark Mode Support ===== */
+@media (prefers-color-scheme: dark) {
+    :root {
+        /* Background Colors */
+        --color-bg-base: #0f172a;
+        --color-bg-surface: #1e293b;
+        --color-bg-elevated: #334155;
+        --color-bg-overlay: rgba(0, 0, 0, 0.5);
+
+        /* Text Colors */
+        --color-text-primary: #f1f5f9;
+        --color-text-secondary: #cbd5e1;
+        --color-text-tertiary: #94a3b8;
+
+        /* Border Colors */
+        --color-border: #334155;
+        --color-border-light: #475569;
+        --color-border-dark: #1e293b;
+
+        /* Message Colors (adjusted for dark mode) */
+        --color-ai-msg-bg: #334155;
+
+        /* Shadows (lighter in dark mode) */
+        --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 2px 12px rgba(0, 0, 0, 0.4);
+        --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+        --shadow-xl: 0 12px 32px rgba(0, 0, 0, 0.6);
+    }
+}
+
+/* Manual Dark Mode Toggle Support */
+[data-theme="dark"] {
+    /* Same as prefers-color-scheme: dark */
+    --color-bg-base: #0f172a;
+    --color-bg-surface: #1e293b;
+    --color-bg-elevated: #334155;
+    --color-bg-overlay: rgba(0, 0, 0, 0.5);
+
+    --color-text-primary: #f1f5f9;
+    --color-text-secondary: #cbd5e1;
+    --color-text-tertiary: #94a3b8;
+
+    --color-border: #334155;
+    --color-border-light: #475569;
+    --color-border-dark: #1e293b;
+
+    --color-ai-msg-bg: #334155;
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-xl: 0 12px 32px rgba(0, 0, 0, 0.6);
+}
+
+/* Light Mode (explicit) */
+[data-theme="light"] {
+    /* Use default light mode values */
+    --color-bg-base: #f5f7fa;
+    --color-bg-surface: #ffffff;
+    --color-bg-elevated: #fafbfc;
+    --color-bg-overlay: rgba(15, 23, 42, 0.25);
+
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #4a4a4a;
+    --color-text-tertiary: #6b6b6b;
+
+    --color-border: #a0a0a0;
+    --color-border-light: #c0c0c0;
+    --color-border-dark: #b0b0b0;
+
+    --color-ai-msg-bg: #f0f0f0;
+}
