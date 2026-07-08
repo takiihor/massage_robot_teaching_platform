@@ -7,6 +7,10 @@ certs/
 *.key
 *.crt
 
+# Local dependency environments
+venv/
+.venv/
+
 # Runtime files
 *.pid
 *.log

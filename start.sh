@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORT="${PORT:-5000}"
+ENV_PORT="$(sed -n 's/^PORT=//p' "$SCRIPT_DIR/.env" 2>/dev/null | tail -1)"
+PORT="${PORT:-${ENV_PORT:-5033}}"
 HOST="${HOST:-0.0.0.0}"
 PIDFILE="$SCRIPT_DIR/massage_robot.pid"
 LOGFILE="$SCRIPT_DIR/server.log"
