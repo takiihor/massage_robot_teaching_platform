@@ -2,6 +2,10 @@
 
 Stable ASR virtual patient teaching platform for massage robot simulation and UR10e-connected teaching sessions.
 
+## UI Screenshot
+
+![Massage Robot Teaching Platform UI](photos/UI_screenshot.png)
+
 ## Quick Setup After Clone/Pull
 
 ```bash
