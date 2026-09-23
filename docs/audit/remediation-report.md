@@ -54,6 +54,14 @@ See `docs/audit/full-repo-audit.md` for the per-script findings ledger, and
   `/robot/state` and `get_operating_state()`.
 - STT WebSocket hardening: concurrent-session cap, chunk-size limit, session
   byte/second ceilings, idle timeout, and `result_task` cancel+await on exit.
+  The budget guards are now a pure, FastAPI-free module (`app/stt_limits.py`)
+  covered by unit tests.
+- `/api/stt/status` browser provider no longer mislabels itself `offline`
+  (Web Speech is network-backed); the fallback chain is derived from real
+  availability.
+- `massage/extend_duration` and `massage/shorten_duration` no longer fabricate
+  `ok:true`; they honestly return `not_supported` (no live-duration mechanism in
+  local mode, no callers).
 - Calibration moved to a gitignored, versioned, atomically-written runtime
   directory with a non-destructive one-time migration.
 - ZIP export excludes secrets/runtime state; `start.sh` and `main.py` share a
@@ -63,7 +71,8 @@ See `docs/audit/full-repo-audit.md` for the per-script findings ledger, and
 
 - JS: `node --test` → 48 passing (includes `tests/export-safety.test.mjs`).
 - Scenario: `verify-scenarios` 41/41 and `scenario-config` 134/134.
-- Python: `unittest` → 32 passing (protocol contract, settings, robot safety).
+- Python: `unittest` → 37 passing (protocol contract, settings, STT limits,
+  robot safety).
 - `npm test` exit code 0. `python -m compileall` clean (3.8 target).
 - `.github/workflows/ci.yml` runs all of the above in simulation on push/PR to
   `main`.

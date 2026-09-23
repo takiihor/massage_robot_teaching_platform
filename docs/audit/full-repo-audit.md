@@ -156,6 +156,12 @@ Implemented and covered by automated tests:
 - A14 calibration → local runtime dir, gitignored, versioned schema, migration.
 - A6 ZIP export secret exclusion + fixture test.
 - A1 health endpoint split (liveness vs readiness vs robot).
+- A7 `/api/stt/status` browser provider no longer advertises `offline` (the Web
+  Speech API is network-backed); fallback chain derives from real availability.
+- A7 STT WS budget guards extracted to `app/stt_limits.py` (pure, FastAPI-free)
+  and unit-tested (`tests/python/test_stt_limits.py`).
+- `extend/shorten_duration` no longer fabricate `ok:true`; they honestly return
+  `not_supported` (no callers, no live-duration mechanism in local mode).
 
 Documented as remaining / manual (not silently ignored):
 - Watchdog enforcement requires a robot-side host program change → **MANUAL

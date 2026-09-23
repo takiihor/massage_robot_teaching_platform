@@ -48,6 +48,7 @@ load_dotenv()
 # the operating profile, and the trusted robot controller allowlist. See
 # app/settings.py and docs/security/robot-control-boundary.md.
 from app.settings import load_settings, validate_robot_target, is_loopback
+from app.stt_limits import SttLimits
 
 SETTINGS = load_settings()
 
@@ -138,6 +139,15 @@ try:
     STT_MAX_CONCURRENT_SESSIONS = int(os.getenv("STT_MAX_CONCURRENT_SESSIONS", "4"))
 except Exception:
     STT_MAX_CONCURRENT_SESSIONS = 4
+
+# Single, testable budget object over the limits above (see app/stt_limits.py).
+STT_LIMITS = SttLimits(
+    max_concurrent_sessions=STT_MAX_CONCURRENT_SESSIONS,
+    max_chunk_b64_chars=STT_MAX_CHUNK_B64_CHARS,
+    max_session_bytes=STT_MAX_SESSION_BYTES,
+    max_session_seconds=float(STT_MAX_SESSION_SECONDS),
+    idle_timeout_seconds=STT_IDLE_TIMEOUT_S,
+)
 
 _STT_ACTIVE_SESSIONS = 0
 
@@ -807,12 +817,22 @@ async def massage_change_action_acupressure():
 
 @app.post("/massage/extend_duration")
 async def massage_extend_duration():
-    return {"ok": True, "message": "Duration updated for next cycle"}
+    return {
+        "ok": False,
+        "error_code": "not_supported",
+        "message": "Live duration change is not supported in local mode. "
+                   "Set duration on the next start command.",
+    }
 
 
 @app.post("/massage/shorten_duration")
 async def massage_shorten_duration():
-    return {"ok": True, "message": "Duration updated for next cycle"}
+    return {
+        "ok": False,
+        "error_code": "not_supported",
+        "message": "Live duration change is not supported in local mode. "
+                   "Set duration on the next start command.",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1016,7 +1036,7 @@ async def websocket_stt_stream(websocket: WebSocket):
         return
 
     global _STT_ACTIVE_SESSIONS
-    if _STT_ACTIVE_SESSIONS >= STT_MAX_CONCURRENT_SESSIONS:
+    if not STT_LIMITS.can_accept_new_session(_STT_ACTIVE_SESSIONS):
         await websocket.send_json(
             {"type": "error", "message": "Too many active STT sessions; retry shortly."}
         )
@@ -1122,7 +1142,7 @@ async def websocket_stt_stream(websocket: WebSocket):
         result_task = asyncio.create_task(send_results())
 
         while True:
-            if time.time() - session_started > STT_MAX_SESSION_SECONDS:
+            if STT_LIMITS.session_expired(time.time(), session_started):
                 await websocket.send_json({"type": "status", "state": "stopped", "reason": "max_duration"})
                 break
             try:
@@ -1183,11 +1203,11 @@ async def websocket_stt_stream(websocket: WebSocket):
             elif msg_type == "audio":
                 if audio_stream and "data" in message:
                     b64 = message["data"]
-                    if not isinstance(b64, str) or len(b64) > STT_MAX_CHUNK_B64_CHARS:
+                    if not isinstance(b64, str) or STT_LIMITS.chunk_too_large(len(b64)):
                         await websocket.send_json({"type": "error", "message": "audio chunk too large"})
                         break
-                    session_bytes += len(b64)
-                    if session_bytes > STT_MAX_SESSION_BYTES:
+                    session_bytes, within_budget = STT_LIMITS.add_chunk(session_bytes, len(b64))
+                    if not within_budget:
                         await websocket.send_json({"type": "status", "state": "stopped", "reason": "max_bytes"})
                         break
                     try:
@@ -1491,19 +1511,27 @@ async def stt_status():
             }
         )
 
+    # The browser Web Speech API is backed by the browser vendor's cloud
+    # recogniser, so it requires a network connection. It must NOT be advertised
+    # as "offline" — that was a truthful-reporting bug (it implied STT keeps
+    # working with no connectivity). Actual runtime availability is still
+    # decided client-side by BrowserSTTProvider.isAvailable().
     providers.append(
         {
             "name": "browser",
             "available": True,
             "languages": ["zh-HK", "zh-CN", "en-US"],
-            "features": ["offline", "no-api-key"],
+            "features": ["no-api-key", "network-required"],
         }
     )
+
+    # Fallback chain reflects what is actually usable right now.
+    fallback_chain = [p["name"] for p in providers]
 
     return {
         "primary": "azure-speech-sdk" if AZURE_SPEECH_STT_ENABLED else "browser",
         "providers": providers,
-        "fallback_chain": ["azure-speech-sdk", "browser"],
+        "fallback_chain": fallback_chain,
     }
 
 
