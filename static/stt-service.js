@@ -92,6 +92,7 @@ class AzureSpeechProvider extends STTProvider {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 3;
         this.expectedStop = false;
+        this.providerErrorReported = false;
     }
 
     async checkAvailability() {
@@ -125,6 +126,7 @@ class AzureSpeechProvider extends STTProvider {
 
         try {
             this.expectedStop = false;
+            this.providerErrorReported = false;
             // Get microphone stream
             this.stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -156,15 +158,17 @@ class AzureSpeechProvider extends STTProvider {
 
             this.ws.onerror = (error) => {
                 console.error('Azure Speech WebSocket error:', error);
-                if (this.errorCallback) {
-                    this.errorCallback({ provider: this.name, error: 'WebSocket error' });
-                }
+                this._reportProviderError('WebSocket error');
             };
 
             this.ws.onclose = () => {
                 console.log('Azure Speech WebSocket closed');
+                const closedUnexpectedly = this.isListening && !this.expectedStop;
                 this.isListening = false;
                 this._cleanup();
+                if (closedUnexpectedly) {
+                    this._reportProviderError('Azure Speech WebSocket closed unexpectedly');
+                }
             };
 
             // Setup audio processing
@@ -173,17 +177,21 @@ class AzureSpeechProvider extends STTProvider {
 
         } catch (e) {
             console.error('Azure Speech start failed:', e);
+            this.expectedStop = true;
             this._cleanup();
             throw e;
         }
     }
 
     async _setupAudioProcessing() {
-        this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 16000
-        });
+        // Use the device's native sample rate so createMediaStreamSource works
+        // across browsers (Firefox rejects contexts whose sampleRate differs
+        // from the microphone's). Audio is resampled to 16 kHz before sending.
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.audioContext = new AudioCtx();
 
         this.source = this.audioContext.createMediaStreamSource(this.stream);
+        this.captureSampleRate = this.audioContext.sampleRate;
 
         // Use ScriptProcessor for audio capture (deprecated but widely supported)
         const bufferSize = 4096;
@@ -195,8 +203,12 @@ class AzureSpeechProvider extends STTProvider {
             }
 
             const inputData = e.inputBuffer.getChannelData(0);
+            // Resample to 16 kHz (Azure PushAudioInputStream expects 16 kHz PCM)
+            const resampled = this._resampleLinear(
+                inputData, this.captureSampleRate, 16000
+            );
             // Convert to 16-bit PCM
-            const pcmData = this._float32ToInt16(inputData);
+            const pcmData = this._float32ToInt16(resampled);
             // Send as base64
             const base64 = this._arrayBufferToBase64(pcmData.buffer);
 
@@ -208,6 +220,24 @@ class AzureSpeechProvider extends STTProvider {
 
         this.source.connect(this.processor);
         this.processor.connect(this.audioContext.destination);
+    }
+
+    _resampleLinear(input, inputRate, outputRate) {
+        if (inputRate === outputRate) {
+            return input;
+        }
+        const outputLength = Math.round(input.length * outputRate / inputRate);
+        const output = new Float32Array(outputLength);
+        const ratio = inputRate / outputRate;
+        for (let i = 0; i < outputLength; i++) {
+            const pos = i * ratio;
+            const index = Math.floor(pos);
+            const frac = pos - index;
+            const sample0 = input[index] || 0;
+            const sample1 = index + 1 < input.length ? input[index + 1] : sample0;
+            output[i] = sample0 + (sample1 - sample0) * frac;
+        }
+        return output;
     }
 
     _float32ToInt16(float32Array) {
@@ -254,12 +284,7 @@ class AzureSpeechProvider extends STTProvider {
 
             case 'error':
                 console.error('Azure Speech error:', msg.message);
-                if (this.errorCallback) {
-                    this.errorCallback({
-                        provider: this.name,
-                        error: msg.message
-                    });
-                }
+                this._reportProviderError(msg.message);
                 break;
 
             case 'status':
@@ -268,14 +293,19 @@ class AzureSpeechProvider extends STTProvider {
                     const reason = msg.reason ? ` (${msg.reason})` : '';
                     this.isListening = false;
                     this._cleanup();
-                    if (this.errorCallback) {
-                        this.errorCallback({
-                            provider: this.name,
-                            error: `Azure Speech recognition stopped unexpectedly${reason}`
-                        });
-                    }
+                    this._reportProviderError(
+                        `Azure Speech recognition stopped unexpectedly${reason}`
+                    );
                 }
                 break;
+        }
+    }
+
+    _reportProviderError(error) {
+        if (this.providerErrorReported) return;
+        this.providerErrorReported = true;
+        if (this.errorCallback) {
+            this.errorCallback({ provider: this.name, error });
         }
     }
 
@@ -314,7 +344,6 @@ class AzureSpeechProvider extends STTProvider {
             this.ws.close();
             this.ws = null;
         }
-        this.expectedStop = false;
     }
 }
 
@@ -686,7 +715,10 @@ class STTService {
             console.log(`🎤 STT started with ${this.currentProvider}`);
         } catch (e) {
             console.error(`Failed to start ${this.currentProvider}:`, e);
-            await this._switchToFallback();
+            const fallbackStarted = await this._switchToFallback(e);
+            if (!fallbackStarted) {
+                throw e;
+            }
         }
     }
 
@@ -703,8 +735,9 @@ class STTService {
         console.log('🎤 STT stopped');
     }
 
-    async _switchToFallback() {
+    async _switchToFallback(initialError = null) {
         const currentIndex = this.fallbackChain.indexOf(this.currentProvider);
+        let lastError = initialError;
 
         for (let i = currentIndex + 1; i < this.fallbackChain.length; i++) {
             const nextProvider = this.fallbackChain[i];
@@ -733,9 +766,10 @@ class STTService {
                         reason: 'fallback'
                     });
 
-                    return;
+                    return true;
                 } catch (e) {
                     console.error(`Failed to start ${nextProvider}:`, e);
+                    lastError = e;
                     continue;
                 }
             }
@@ -743,16 +777,18 @@ class STTService {
 
         // All providers failed
         this.isListening = false;
+        const errorMessage = lastError?.message || lastError?.error || 'All STT providers failed';
         this.eventBus.emit('all-providers-failed', {
             lastProvider: this.currentProvider,
-            error: 'All STT providers failed'
+            error: errorMessage
         });
+        return false;
     }
 
     async _handleProviderError(providerName, error) {
         if (providerName === this.currentProvider && this.isListening) {
             console.warn(`Current provider ${providerName} error, attempting fallback...`);
-            await this._switchToFallback();
+            await this._switchToFallback(error);
         }
     }
 

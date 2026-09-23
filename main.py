@@ -90,7 +90,7 @@ PERFORMANCE_CONFIG = {
 }
 
 
-def _csv_env(name: str, default: str) -> list[str]:
+def _csv_env(name: str, default: str) -> "list[str]":
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
 
