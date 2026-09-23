@@ -35,8 +35,15 @@
             pausedMs: 0
         },
         connection: {
+            // Backend-authoritative operating state. Never inferred from
+            // connectivity on the client. See docs/audit/full-repo-audit.md (Sec 4).
             connected: false,
-            simulation: true
+            simulation: false,
+            state: 'UNKNOWN',        // PHYSICAL_READY | PHYSICAL_NOT_READY | SIMULATION | FAULT
+            profile: null,
+            faulted: false,
+            capabilities: {},
+            reason: null
         },
         vitals: { ...DEFAULT_VITALS },
         instructor: {
@@ -109,8 +116,40 @@
         });
     }
 
-    function currentRobotConnected() {
-        return !!state.connection.connected;
+    // Robot operating state is authoritative from the backend. The frontend
+    // never infers "simulation" from a dropped connection or an API error — a
+    // physical failure must never be presented as a successful simulated session.
+    function applyOperatingState(os) {
+        if (!os) return;
+        const sim = os.simulation_enabled === true || os.state === 'SIMULATION';
+        state.connection.operating = os;
+        state.connection.state = os.state || (sim ? 'SIMULATION' : 'PHYSICAL_NOT_READY');
+        state.connection.connected = !!os.connected;
+        state.connection.simulation = sim;
+        state.connection.motionReady = os.state === 'PHYSICAL_READY' || sim;
+        state.connection.faulted = os.state === 'FAULT';
+        renderRobotState();
+    }
+
+    function renderRobotState() {
+        const text = $('y65RobotStateText');
+        const dot = $('y65RobotStateDot');
+        const label = {
+            PHYSICAL_READY: 'Robot: Connected · Ready',
+            PHYSICAL_NOT_READY: 'Robot: Not ready',
+            SIMULATION: 'Robot: SIMULATION',
+            FAULT: 'Robot: FAULT',
+            UNKNOWN: 'Robot: Unknown'
+        }[state.connection.state] || 'Robot: Unknown';
+        if (text) {
+            text.textContent = label;
+            text.dataset.robotState = state.connection.state || 'UNKNOWN';
+        }
+        if (dot) {
+            dot.classList.toggle('offline', state.connection.state !== 'PHYSICAL_READY' && !state.connection.simulation);
+            dot.classList.toggle('sim', !!state.connection.simulation);
+            dot.classList.toggle('fault', !!state.connection.faulted);
+        }
     }
 
     async function refreshRobotHealth() {
@@ -118,18 +157,21 @@
             const response = await fetch('/robot/state', { cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            state.connection.connected = !!data.connected;
-            state.connection.simulation = !state.connection.connected;
-            const text = $('y65RobotStateText');
-            if (text) text.textContent = state.connection.connected ? 'Robot: Connected' : 'Robot: Simulation';
-            const dot = $('y65RobotStateDot');
-            if (dot) dot.classList.toggle('offline', !state.connection.connected);
+            // On an unexpected payload shape, degrade to FAULT/UNKNOWN, not simulation.
+            applyOperatingState(data.operating_state || {
+                connected: !!data.connected,
+                simulation_enabled: !!data.simulation_enabled,
+                state: data.simulation_enabled ? 'SIMULATION' : (data.connected ? 'PHYSICAL_NOT_READY' : 'UNKNOWN')
+            });
             return data;
         } catch (error) {
+            // API/network failure must NOT silently become simulation.
             state.connection.connected = false;
-            state.connection.simulation = true;
-            const text = $('y65RobotStateText');
-            if (text) text.textContent = 'Robot: Simulation';
+            state.connection.simulation = false;
+            state.connection.motionReady = false;
+            state.connection.faulted = true;
+            state.connection.state = 'UNKNOWN';
+            renderRobotState();
             return null;
         }
     }
@@ -238,8 +280,18 @@
     window.APP_STATE = state;
 
     async function sendRobotStart(command) {
-        if (!currentRobotConnected()) {
-            return { ok: true, simulation: true, message: 'simulation mode: robot not connected' };
+        // Decide mode from the backend-authoritative operating state only.
+        const conn = state.connection;
+        if (conn.simulation) {
+            // Explicit simulation teaching mode: the session may start, and the
+            // UI keeps showing SIMULATION persistently.
+            return { ok: true, simulation: true, message: 'Simulation teaching session' };
+        }
+        if (conn.state !== 'PHYSICAL_READY') {
+            // Robot not connected / not ready / faulted: FAIL CLOSED. Do not
+            // report a successful start when no real robot will move.
+            const reason = conn.state === 'FAULT' ? 'robot faulted' : 'robot unavailable or not ready';
+            return { ok: false, error: `Cannot start: ${reason}`, reason: conn.state };
         }
         if (!window.RobotController?.sendRobotCommand) {
             return { ok: false, error: 'RobotController unavailable' };
@@ -255,7 +307,12 @@
     }
 
     async function sendRobotControl(endpoint) {
-        if (!currentRobotConnected()) return true;
+        const conn = state.connection;
+        // Control ops are no-ops that succeed only in simulation; in physical
+        // mode they must reach the robot, and when the robot is not usable the
+        // call must fail (never silently "true").
+        if (conn.simulation) return true;
+        if (conn.state === 'UNKNOWN' || conn.state === 'FAULT') return false;
         if (!window.RobotController?.sendRobotCommand) return false;
         return window.RobotController.sendRobotCommand(endpoint);
     }
@@ -1256,6 +1313,77 @@
         $('y65LoadingSkeleton')?.setAttribute('aria-hidden', 'true');
     }
 
+    let robotConnectInFlight = false;
+
+    async function connectRobotFromUI() {
+        if (robotConnectInFlight) return;             // cannot be spammed into concurrent attempts
+        const ipInput = $('robotIpInput');
+        const btn = $('robotConnectBtn');
+        const ip = ipInput ? ipInput.value.trim() : '';
+        if (!window.RobotController?.connectRobot) {
+            addSystemMessage('Robot controls unavailable.', 'warning');
+            return;
+        }
+        robotConnectInFlight = true;
+        if (btn) { btn.disabled = true; btn.dataset.wasLabel = btn.textContent; btn.textContent = 'Connecting…'; }
+        try {
+            const res = await window.RobotController.connectRobot(ip);
+            if (res.responseOk && res.data?.ok) {
+                addSystemMessage('Robot connected.', 'info');
+            } else {
+                const code = res.data?.detail?.error_code || res.detail || `HTTP ${res.status}`;
+                addSystemMessage(`Robot connect failed: ${code}`, 'error');
+            }
+        } finally {
+            await refreshRobotHealth();
+            syncYear65UI();
+            robotConnectInFlight = false;
+            if (btn) { btn.disabled = false; btn.textContent = btn.dataset.wasLabel || 'Connect'; }
+        }
+    }
+
+    async function disconnectRobotFromUI() {
+        if (robotConnectInFlight) return;
+        const btn = $('robotDisconnectBtn');
+        const running = window.currentMassageSession && !window.currentMassageSession.ended
+            && !window.currentMassageSession.simulationOnly;
+        if (running && !window.confirm?.('A session is active. Disconnect will attempt a safe stop first. Continue?')) {
+            return;
+        }
+        robotConnectInFlight = true;
+        if (btn) btn.disabled = true;
+        try {
+            // If a physical session is active, stop it first, then disconnect.
+            if (window.currentMassageSession && !window.currentMassageSession.ended && !state.connection.simulation) {
+                try { await window.currentMassageSession.stop('disconnect'); } catch (e) { /* stop handles its own errors */ }
+            }
+            const res = await window.RobotController?.disconnectRobot?.();
+            if (!res?.responseOk) {
+                addSystemMessage(`Robot disconnect reported an error: ${res?.detail || res?.status}`, 'warning');
+            } else {
+                addSystemMessage('Robot disconnected.', 'info');
+            }
+        } finally {
+            await refreshRobotHealth();
+            syncYear65UI();
+            robotConnectInFlight = false;
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    function bindRobotConnectionControls() {
+        const connectBtn = $('robotConnectBtn');
+        const disconnectBtn = $('robotDisconnectBtn');
+        if (connectBtn && !connectBtn.dataset.bound) {
+            connectBtn.dataset.bound = '1';
+            connectBtn.addEventListener('click', connectRobotFromUI);
+        }
+        if (disconnectBtn && !disconnectBtn.dataset.bound) {
+            disconnectBtn.dataset.bound = '1';
+            disconnectBtn.addEventListener('click', disconnectRobotFromUI);
+        }
+    }
+
     async function initApp() {
         if (initialized) return window.app;
         initialized = true;
@@ -1271,6 +1399,7 @@
         bindStudentControls();
         bindInstructorControls();
         bindSettingsControls();
+        bindRobotConnectionControls();
         bindSessionVisualReset();
         bindSttService();
         updateAsrLanguageBadge();
@@ -1309,6 +1438,9 @@
         stopSession,
         resetTeachingVisualsToSetupBaseline,
         handleTranscript,
-        refreshRobotHealth
+        refreshRobotHealth,
+        connectRobotFromUI,
+        disconnectRobotFromUI,
+        getOperatingState: () => state.connection
     };
 })();
