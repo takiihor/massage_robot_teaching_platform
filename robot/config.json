@@ -1,117 +1,53 @@
 {
-  "ip": "127.0.0.1",
-  "frequency": 50,
-  "dashboard_port": 29999,
-  "payload_kg": 1.0,
-  "cog": [0.0, 0.0, 0.05],
-  "max_force_n": 20.0,
-  "max_torque_nm": 15.0,
-  "heartbeat_timeout_s": 3.0,
-  "heartbeat_interval_s": 0.5,
-  "require_remote_mode": false,
+  "_comment": "ADVISORY reference describing the URScript host program and workcell. The AUTHORITATIVE runtime constants (register map, command ids, states, error codes, capabilities) live in robot/protocol.py and are consumed by robot/ur10e_middleware_local_mode.py. This file is NOT read to enforce any safety limit. Anything here that is not enforced by code is marked advisory_* so operators are not misled.",
 
+  "protocol_version_source": "robot/protocol.py",
   "massage_program": "massage_modes.urp",
 
-  "force_mode": {
-    "default_force_n": 8.0,
-    "min_force_n": 3.0,
-    "max_force_n": 15.0,
-    "selection": [0, 0, 1, 0, 0, 0],
-    "limits": [0.05, 0.05, 0.15, 0.5, 0.5, 0.5],
-    "type": 2
-  },
-  "jog_speed_mps": 0.03,
-  "jog_accel_mps2": 0.2,
-
-  "safety": {
-    "max_travel_m": 0.3,
-    "max_speed_mps": 0.1,
-    "workspace_min": [-0.5, -0.5, 0.0],
-    "workspace_max": [0.5, 0.5, 0.5]
-  },
-
-  "modes": {
-    "1": {
-      "name": "push_up",
-      "display_name": "向上推 (Push Up)",
-      "description": "Linear push along leg with constant Z-force",
-      "default_force_n": 10.0,
-      "base_speed_mps": 0.02,
-      "dt": 0.02,
-      "joint_speeds": {
-        "base": [0.12, 0.08, 0.05, 0.04, 0.03, 0.02],
-        "frequencies": [0.35, 0.35, 0.25, 0.45, 0.55, 0.65],
-        "phases": [0, 0, 0.785, 0, 1.047, 0.524]
-      },
-      "max_joint_acceleration": 0.6
-    },
-    "2": {
-      "name": "wave_push",
-      "display_name": "波浪推 (Wave Push)",
-      "description": "Sinusoidal side-to-side with forward motion",
-      "default_force_n": 8.0,
-      "base_speed_mps": 0.02,
-      "wave_amplitude_mps": 0.01,
-      "wave_frequency_hz": 0.6,
-      "dt": 0.02,
-      "joint_speeds": {
-        "base": [0.10, 0.08, 0.06, 0.05, 0.04, 0.03],
-        "frequencies": [0.6, 0.6, 0.6, 0.9, 0.48, 0.72],
-        "phases": [0, 0, 1.571, 0, 0.785, 1.047]
-      },
-      "max_joint_acceleration": 0.5
-    },
-    "3": {
-      "name": "spiral_press",
-      "display_name": "螺旋按 (Spiral Press)",
-      "description": "Circular motion on contact surface",
-      "default_force_n": 12.0,
-      "radius_m": 0.02,
-      "base_frequency_hz": 0.6,
-      "dt": 0.02,
-      "joint_speeds": {
-        "base": [0.04, 0.03, 0.10, 0.10, 0.06, 0.05],
-        "frequencies": [0.42, 0.42, 0.6, 0.6, 0.78, 0.78],
-        "phases": [0, 0, 0, 0, 1.571, 1.571]
-      },
-      "max_joint_acceleration": 0.6
-    },
-    "4": {
-      "name": "knead",
-      "display_name": "揉捏 (Knead)",
-      "description": "Small circular kneading motion",
-      "default_force_n": 10.0,
-      "radius_m": 0.008,
-      "base_frequency_hz": 1.2,
-      "dt": 0.02,
-      "joint_speeds": {
-        "base": [0.03, 0.16, 0.05, 0.04, 0.12, 0.06],
-        "frequencies": [0.96, 1.2, 1.44, 1.08, 1.2, 1.32],
-        "phases": [0, 0, 0, 0.785, 0, 1.047]
-      },
-      "max_joint_acceleration": 0.7
-    }
+  "advisory_host": {
+    "ip": "127.0.0.1",
+    "_note": "Actual connect target comes from trusted env (UR10E_IP) + allowlist (UR10E_ALLOWED_IPS), never from this file or a browser value."
   },
 
   "rtde_registers": {
+    "_note": "Canonical; mirrors robot/protocol.py. Inputs 18-29, outputs 12-17 (low range required by ur_rtde).",
     "input": {
       "mode_id": "input_int_register_18",
       "speed_scale_x100": "input_int_register_19",
       "force_n_x10": "input_int_register_20",
       "duration_s": "input_int_register_21",
       "command_seq": "input_int_register_22",
-      "start": "input_bit_register_64",
-      "stop": "input_bit_register_65",
-      "pause": "input_bit_register_66",
-      "heartbeat": "input_bit_register_67"
+      "force_enable": "input_int_register_23",
+      "cal_pose_x": "input_double_register_24",
+      "cal_pose_y": "input_double_register_25",
+      "cal_pose_z": "input_double_register_26",
+      "cal_pose_rx": "input_double_register_27",
+      "cal_pose_ry": "input_double_register_28",
+      "cal_pose_rz": "input_double_register_29"
     },
     "output": {
-      "state": "output_int_register_18",
-      "error_code": "output_int_register_19",
-      "current_mode": "output_int_register_20",
-      "progress_percent": "output_int_register_21",
-      "ack_command_seq": "output_int_register_22",
-      "heartbeat_ack": "output_bit_register_64"
+      "state": "output_int_register_12",
+      "error_code": "output_int_register_13",
+      "current_mode": "output_int_register_14",
+      "progress_percent": "output_int_register_15",
+      "ack_command_seq": "output_int_register_16",
+      "cal_status": "output_int_register_17"
     }
+  },
+
+  "advisory_modes": {
+    "1": { "name": "push_up", "display_name": "向上推 (Push Up)" },
+    "2": { "name": "wave_push", "display_name": "波浪推 (Wave Push)" },
+    "3": { "name": "spiral_press", "display_name": "螺旋按 (Spiral Press)" },
+    "4": { "name": "knead", "display_name": "揉捏 (Knead)" }
+  },
+
+  "advisory_host_program_notes": {
+    "checked_in_scripts": [
+      "ur10e_demo_smooth_27.urs",
+      "Run_mode4_only.urs",
+      "Run_mode4_Yaxis.urs"
+    ],
+    "_note": "These demo host programs implement massage modes + arm/stop/pause/resume/ACK/over-force only. They do NOT implement calibration, jog or heartbeat, and always pin OUT_CAL_STATUS=0. The backend therefore hides calibration/jog under the DEMO capability profile. Motion-limit/heartbeat values below were NEVER enforced in software and have been removed to avoid false safety assurance; enforce them on the robot (PolyScope limits + a robot-side watchdog) — see docs/robot/rtde-protocol.md."
   }
 }

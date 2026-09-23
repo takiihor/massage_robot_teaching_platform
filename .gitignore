@@ -19,6 +19,10 @@ massage_robot.pid
 __pycache__/
 *.py[cod]
 
+# Local runtime/state data (workcell calibration is NOT source code)
+.massage_state/
+robot/calibration_data.json
+
 # Node / test artifacts
 node_modules/
 test-results/

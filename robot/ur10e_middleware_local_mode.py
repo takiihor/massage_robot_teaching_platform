@@ -38,55 +38,72 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------
-# RTDE Register Map (MUST match ur10e_modes_local_mode.urs)
+# RTDE Register Map — canonical definition lives in robot/protocol.py.
+# The aliases below exist so the rest of this module (and its ACK/preflight
+# logic) reads against a single source of truth that the contract tests also
+# assert against the checked-in .urs programs.
 # ---------------------------------------------------------------------
-# Input integers (UI/backend -> URScript host program)
-IN_CMD = 18            # 0 stop, 1..4 modes, 5 pause, 6 resume, 20/21 calibration etc (per your .urs)
-IN_SPEED_X100 = 19     # speed scaling (int) e.g. 15 means 0.15x baseline (interpretation by URScript)
-IN_FORCE_X10 = 20      # force (N) * 10  (e.g. 35 => 3.5N)
-IN_DURATION_S = 21     # seconds
-IN_CMD_SEQ = 22        # monotonically increasing sequence number
-IN_FORCE_ENABLE = 23   # 0=Force OFF, 1=Force ON (if not supported, URScript falls back to IN_FORCE_X10<0)
+from robot import protocol
+from robot.protocol import (
+    IN_CMD,
+    IN_SPEED_X100,
+    IN_FORCE_X10,
+    IN_DURATION_S,
+    IN_CMD_SEQ,
+    IN_FORCE_ENABLE,
+    IN_POSE_X,
+    IN_POSE_Y,
+    IN_POSE_Z,
+    IN_POSE_RX,
+    IN_POSE_RY,
+    IN_POSE_RZ,
+    OUT_STATE,
+    OUT_ERROR_CODE,
+    OUT_CURRENT_MODE,
+    OUT_PROGRESS,
+    OUT_ACK_SEQ,
+    OUT_CAL_STATUS,
+    URSCRIPT_ERROR_TEXT as UR_SCRIPT_ERROR_TEXT,
+    Cmd,
+    State,
+    Capabilities,
+    CAP_CALIBRATION,
+    CAP_JOG,
+    CAP_MASSAGE,
+    CALIBRATION_CMD_IDS,
+    JOG_CMD_IDS,
+    MOTION_CMD_IDS,
+    PROFILE_POLICIES,
+)
 
-# Output integers (URScript -> UI/backend)
-# NOTE: Some ur_rtde builds only support output int registers in the lower range [12-19].
-# Keep outputs within that range to avoid getOutputIntRegister() failures.
-OUT_STATE = 12
-OUT_ERROR_CODE = 13
-OUT_CURRENT_MODE = 14
-OUT_PROGRESS = 15
-OUT_ACK_SEQ = 16
-OUT_CAL_STATUS = 17
+# Backward-compatible command-id aliases (values now come from protocol.Cmd).
+CMD_SAVE_POINT_A = int(Cmd.SAVE_POINT_A)
+CMD_SAVE_POINT_B = int(Cmd.SAVE_POINT_B)
+CMD_MOVE_TO_A = int(Cmd.MOVE_TO_A)
+CMD_MOVE_TO_B = int(Cmd.MOVE_TO_B)
+CMD_MOVE_TO_SAFE = int(Cmd.MOVE_TO_SAFE)
+CMD_CLEAR_CALIBRATION = int(Cmd.CLEAR_CALIBRATION)
+CMD_SET_POINT_A = int(Cmd.SET_POINT_A)
+CMD_SET_POINT_B = int(Cmd.SET_POINT_B)
+CMD_JOG_Z_UP = int(Cmd.JOG_Z_UP)
+CMD_JOG_Z_DOWN = int(Cmd.JOG_Z_DOWN)
 
-UR_SCRIPT_ERROR_TEXT = {
-    0: "ok",
-    1: "unknown command",
-    2: "overforce stop",
-    3: "host program is not armed",
-}
+CALIBRATION_SCHEMA_VERSION = 1
 
-# Optional input float registers used by your URScript for calibration points
-# Align with ur10e_modes.urs and known RTDE IO support.
-IN_POSE_X = 24
-IN_POSE_Y = 25
-IN_POSE_Z = 26
-IN_POSE_RX = 27
-IN_POSE_RY = 28
-IN_POSE_RZ = 29
+# Calibration is workcell/runtime data, not source code. It lives in a local
+# state directory (override with MASSAGE_STATE_DIR) and is git-ignored. The old
+# tracked robot/calibration_data.json is migrated on first run, never destroyed.
+_LEGACY_CALIBRATION_FILE = Path(__file__).parent / "calibration_data.json"
 
-# Calibration command IDs (must match .urs)
-CMD_SAVE_POINT_A = 10
-CMD_SAVE_POINT_B = 11
-CMD_MOVE_TO_A = 12
-CMD_MOVE_TO_B = 13
-CMD_MOVE_TO_SAFE = 14
-CMD_CLEAR_CALIBRATION = 20
-CMD_SET_POINT_A = 21
-CMD_SET_POINT_B = 22
-CMD_JOG_Z_UP = 101
-CMD_JOG_Z_DOWN = 102
 
-CALIBRATION_FILE = Path(__file__).parent / "calibration_data.json"
+def runtime_state_dir() -> Path:
+    base = os.getenv("MASSAGE_STATE_DIR")
+    path = Path(base) if base else Path(__file__).parent.parent / ".massage_state"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+CALIBRATION_FILE = runtime_state_dir() / "calibration_data.json"
 
 
 # ---------------------------------------------------------------------
@@ -215,10 +232,102 @@ class UR10eMiddlewareLocalMode:
         self._telemetry_thread: Optional[threading.Thread] = None
         self._latest: Dict[str, Any] = {}
         self.connected = False
+
+        # --- Operating profile & capability model (P0: explicit, not inferred
+        #     from mere RTDE connectivity). Configured by the app layer via
+        #     configure_runtime(); safe demo defaults here. ---
+        self.profile: str = "PHYSICAL_DEMO"
+        self.simulation_enabled: bool = False
+        self.capabilities: Capabilities = Capabilities.demo()
+
+        # --- Serialized robot command runtime (P0: a timed-out motion op must
+        #     never let a later motion op race it on the RTDE link). ---
+        #     _motion_inflight is set True while a motion-changing op physically
+        #     executes; it is cleared only when that op actually returns, so an
+        #     asyncio-level timeout at the API cannot release it early.
+        self._cmd_lock = threading.Lock()
+        self._motion_inflight = False
+        self._faulted = False
+        self._fault_reason: Optional[str] = None
+        self._active_cmd_id: Optional[str] = None
+        self._cmd_counter = 0
+
+        self._migrate_legacy_calibration()
         saved = self._load_calibration_from_file()
         if saved:
             self._cal_point_a_pose = saved.get("point_a_pose") or None
             self._cal_point_b_pose = saved.get("point_b_pose") or None
+
+    # --------------------------
+    # Runtime configuration (called from app bootstrap)
+    # --------------------------
+    def configure_runtime(
+        self,
+        profile: str,
+        simulation_enabled: bool,
+        capabilities: Optional[Capabilities] = None,
+    ) -> None:
+        if profile not in protocol.PROFILES:
+            profile = "PHYSICAL_DEMO"
+        self.profile = profile
+        self.simulation_enabled = bool(simulation_enabled)
+        if capabilities is not None:
+            self.capabilities = capabilities
+
+    def _policy(self):
+        return PROFILE_POLICIES.get(self.profile, PROFILE_POLICIES["PHYSICAL_DEMO"])
+
+    def is_physical(self) -> bool:
+        return self._policy().is_physical
+
+    # --------------------------
+    # Serialized command bookkeeping
+    # --------------------------
+    def _new_cmd_id(self, kind: str) -> str:
+        with self._cmd_lock:
+            self._cmd_counter += 1
+            return f"{kind}-{self._cmd_counter}"
+
+    def _begin_motion_cmd(self, cmd_id: str) -> Optional[str]:
+        """Try to take the single motion-command slot.
+
+        Returns None on success, or a machine-readable reason if the slot is
+        busy / the controller is in a faulted-uncertain state and motion stays
+        blocked until re-established. STOP/pause are never routed here.
+        """
+        with self._cmd_lock:
+            if self._faulted:
+                return "robot_uncertain"
+            if self._motion_inflight:
+                return "robot_busy"
+            self._motion_inflight = True
+            self._active_cmd_id = cmd_id
+            return None
+
+    def _end_motion_cmd(self) -> None:
+        with self._cmd_lock:
+            self._motion_inflight = False
+            self._active_cmd_id = None
+
+    def mark_faulted(self, reason: str) -> None:
+        """Enter a fail-closed state after an uncertain operation outcome."""
+        with self._cmd_lock:
+            self._faulted = True
+            self._fault_reason = reason
+        logger.error("Robot controller marked FAULTED/UNCERTAIN: %s", reason)
+
+    def clear_fault(self) -> None:
+        with self._cmd_lock:
+            was = self._faulted
+            self._faulted = False
+            self._fault_reason = None
+        if was:
+            logger.info("Robot fault cleared after state re-synchronization")
+
+    @property
+    def faulted(self) -> bool:
+        with self._cmd_lock:
+            return self._faulted
 
     # --------------------------
     # Connection lifecycle
@@ -258,6 +367,9 @@ class UR10eMiddlewareLocalMode:
         self._write_force_enable(False)
         self._resync_sequence_from_robot()
         self._neutralize_motion_on_connect()
+        # A fresh connection re-establishes authoritative state, so any prior
+        # uncertain/faulted latched condition from a timed-out op is cleared.
+        self.clear_fault()
 
         self._stop_evt.clear()
         self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
@@ -639,31 +751,83 @@ class UR10eMiddlewareLocalMode:
             return None
         return [pose[0] * 1000.0, pose[1] * 1000.0, pose[2] * 1000.0]
 
+    def _migrate_legacy_calibration(self) -> None:
+        """Copy a previously tracked robot/calibration_data.json into runtime state once."""
+        try:
+            if CALIBRATION_FILE.exists() or not _LEGACY_CALIBRATION_FILE.exists():
+                return
+            with _LEGACY_CALIBRATION_FILE.open("r", encoding="utf-8") as fh:
+                legacy = json.load(fh)
+            self._write_calibration_record(
+                legacy.get("point_a_pose"), legacy.get("point_b_pose")
+            )
+            logger.info(
+                "Migrated legacy calibration from %s to %s",
+                _LEGACY_CALIBRATION_FILE,
+                CALIBRATION_FILE,
+            )
+        except Exception as exc:
+            logger.warning("Legacy calibration migration skipped: %s", exc)
+
+    @staticmethod
+    def _valid_pose(pose: Any) -> bool:
+        return (
+            isinstance(pose, (list, tuple))
+            and len(pose) == 6
+            and all(isinstance(v, (int, float)) for v in pose)
+        )
+
     def _load_calibration_from_file(self) -> Optional[Dict[str, Any]]:
         if not CALIBRATION_FILE.exists():
             return None
         try:
             with CALIBRATION_FILE.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+                data = json.load(fh)
         except Exception as exc:
-            logger.warning("Failed to load calibration file: %s", exc)
+            logger.warning("Failed to read calibration file: %s", exc)
             return None
+        version = data.get("schema_version", 0)
+        if version != CALIBRATION_SCHEMA_VERSION:
+            logger.error(
+                "Ignoring calibration with unsupported schema_version=%s (expected %s). "
+                "Re-run calibration.",
+                version,
+                CALIBRATION_SCHEMA_VERSION,
+            )
+            return None
+        pa, pb = data.get("point_a_pose"), data.get("point_b_pose")
+        if pa is not None and not self._valid_pose(pa):
+            logger.error("Ignoring calibration: malformed point_a_pose")
+            return None
+        if pb is not None and not self._valid_pose(pb):
+            logger.error("Ignoring calibration: malformed point_b_pose")
+            return None
+        return {"point_a_pose": pa, "point_b_pose": pb}
 
-    def _save_calibration_to_file(self) -> bool:
-        if not self._cal_point_a_pose and not self._cal_point_b_pose:
-            return False
+    def _write_calibration_record(self, point_a: Any, point_b: Any) -> bool:
         data = {
-            "saved_at": time.time(),
-            "point_a_pose": self._cal_point_a_pose,
-            "point_b_pose": self._cal_point_b_pose,
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
+            "protocol_version": protocol.PROTOCOL_VERSION,
+            "created_at": time.time(),
+            "robot_identifier": self._ip or self.default_ip,
+            "reference_frame": "base",
+            "point_a_pose": point_a,
+            "point_b_pose": point_b,
         }
         try:
-            with CALIBRATION_FILE.open("w", encoding="utf-8") as fh:
+            tmp = CALIBRATION_FILE.with_suffix(".json.tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
                 json.dump(data, fh)
+            tmp.replace(CALIBRATION_FILE)
             return True
         except Exception as exc:
             logger.warning("Failed to save calibration file: %s", exc)
             return False
+
+    def _save_calibration_to_file(self) -> bool:
+        if not self._cal_point_a_pose and not self._cal_point_b_pose:
+            return False
+        return self._write_calibration_record(self._cal_point_a_pose, self._cal_point_b_pose)
 
     @staticmethod
     def _calibration_status_to_text(status: Optional[int]) -> str:
@@ -874,6 +1038,69 @@ class UR10eMiddlewareLocalMode:
             return 0
         return max(0, dur)
 
+    def _capability_for_mode(self, mode_id: int) -> Optional[str]:
+        if mode_id in CALIBRATION_CMD_IDS:
+            return CAP_CALIBRATION
+        if mode_id in JOG_CMD_IDS:
+            return CAP_JOG
+        if mode_id == int(Cmd.STOP) or mode_id == int(Cmd.PAUSE):
+            return None
+        if mode_id in (int(Cmd.RESUME),) or mode_id in (1, 2, 3, 4):
+            return CAP_MASSAGE
+        return None
+
+    def _check_capability(self, mode_id: int) -> Optional[Dict[str, Any]]:
+        """Return a failure dict if the loaded host program lacks the capability.
+
+        The backend must not expose calibration / jog as if they worked when the
+        host program (e.g. the demo ``.urs``) does not implement them.
+        """
+        cap = self._capability_for_mode(mode_id)
+        if cap is None:
+            return None
+        if not self.capabilities.supports(cap):
+            return {
+                "ok": False,
+                "error_code": "unsupported_capability",
+                "error": f"The loaded host program does not support '{cap}' commands.",
+                "hint": "Load a host program that implements calibration/jog, or run against a compatible profile.",
+                "capability": cap,
+                "capabilities": self.capabilities.as_dict(),
+            }
+        return None
+
+    def _motion_cmd(self, kind: str, body):
+        """Serialize a single motion-changing robot operation.
+
+        The motion slot is released only when ``body`` actually returns, so an
+        API-layer (asyncio) timeout cannot let a second motion op race the first
+        still-executing RTDE call. On a faulted/uncertain controller, or while
+        another motion op runs, the request is rejected fail-closed.
+        """
+        cmd_id = self._new_cmd_id(kind)
+        reason = self._begin_motion_cmd(cmd_id)
+        if reason:
+            active = self._active_cmd_id
+            msg = (
+                "Robot controller is in an uncertain state after a previous timed-out "
+                "operation. Motion is blocked until the connection is re-established."
+                if reason == "robot_uncertain"
+                else "Another robot motion command is still executing."
+            )
+            logger.warning("cmd %s (%s) rejected: %s (active=%s)", cmd_id, kind, reason, active)
+            return {"ok": False, "error_code": reason, "error": msg, "cmd_id": cmd_id, "active_cmd_id": active}
+        logger.info("cmd %s (%s) START", cmd_id, kind)
+        try:
+            result = body(cmd_id)
+        finally:
+            self._end_motion_cmd()
+        if not isinstance(result, dict):
+            result = {"ok": bool(result)}
+        result = dict(result)
+        result.setdefault("cmd_id", cmd_id)
+        logger.info("cmd %s (%s) END ok=%s error_code=%s", cmd_id, kind, result.get("ok"), result.get("error_code"))
+        return result
+
     def send_mode(
         self,
         mode: int,
@@ -899,7 +1126,11 @@ class UR10eMiddlewareLocalMode:
                     mode, speed_x100, force_x10, duration_s, force_enable, wait_ack)
         if not self.rtde_io:
             logger.error("send_mode: rtde_io not connected!")
-            return {"ok": False, "error": "rtde_io not connected"}
+            return {"ok": False, "error_code": "robot_unavailable", "error": "rtde_io not connected"}
+        cap_failure = self._check_capability(int(mode))
+        if cap_failure is not None:
+            logger.warning("send_mode: capability rejected mode=%d (%s)", int(mode), cap_failure.get("capability"))
+            return cap_failure
         requested_mode = int(mode)
         force_mode4_only = os.getenv("UR10E_FORCE_MODE4_ONLY", "0").lower() in ("1", "true", "yes", "on")
         effective_mode = 4 if force_mode4_only and requested_mode in (1, 2, 3, 4) else requested_mode
@@ -969,72 +1200,183 @@ class UR10eMiddlewareLocalMode:
     def start_massage(self, command: MassageCommand) -> Dict[str, Any]:
         mode_id = self._resolve_mode_id(command.mode)
         if mode_id is None:
-            return {"ok": False, "error": "unknown or missing mode"}
-        preflight = self._motion_preflight()
-        if not preflight.get("ok"):
-            return preflight
-        cal = self.read_urscript_registers()
-        if cal.get("ok"):
-            cal_status = cal.get("cal_status")
-            # Allow cal_status 0 (demo mode - no calibration) or 3 (fully calibrated)
-            # Demo script (ur10e_demo.urs) outputs 0 because it doesn't use calibration
-            if cal_status not in (0, 3):
-                return {
-                    "ok": False,
-                    "error": "calibration not ready",
-                    "calibration_status": cal_status,
-                    "calibration_status_text": self._calibration_status_to_text(cal_status),
-                }
-        arm_result = self._arm_host_program()
-        if not arm_result.get("ok"):
-            return arm_result
-        force_x10 = self._resolve_force_x10(command.intensity)
-        duration_s = self._resolve_duration_s(command.duration)
-        force_enable = bool(getattr(command, "force_assist", False))
-        return self.send_mode(
-            mode_id,
-            speed_x100=100,
-            force_x10=force_x10,
-            duration_s=duration_s,
-            force_enable=force_enable,
-            wait_ack=True,
-        )
+            return {"ok": False, "error_code": "invalid_request", "error": "unknown or missing mode"}
+        # A simulated teaching session never touches the robot.
+        if self.profile == "SIMULATION" or (self.simulation_enabled and not self.connected):
+            return {
+                "ok": True,
+                "simulation": True,
+                "profile": self.profile,
+                "mode": mode_id,
+                "message": "simulation session",
+            }
+
+        def _body(cmd_id: str) -> Dict[str, Any]:
+            cap = self._check_capability(mode_id)
+            if cap is not None:
+                return cap
+            preflight = self._motion_preflight()
+            if not preflight.get("ok"):
+                return preflight
+            cal = self.read_urscript_registers()
+            if cal.get("ok"):
+                cal_status = cal.get("cal_status")
+                policy = self._policy()
+                allowed = self._calibration_allows_motion(cal_status, policy)
+                if not allowed:
+                    return {
+                        "ok": False,
+                        "error_code": "calibration_not_ready",
+                        "error": "calibration not ready for this profile",
+                        "profile": self.profile,
+                        "calibration_status": cal_status,
+                        "calibration_status_text": self._calibration_status_to_text(cal_status),
+                    }
+            arm_result = self._arm_host_program()
+            if not arm_result.get("ok"):
+                return arm_result
+            force_x10 = self._resolve_force_x10(command.intensity)
+            duration_s = self._resolve_duration_s(command.duration)
+            force_enable = bool(getattr(command, "force_assist", False))
+            return self.send_mode(
+                mode_id,
+                speed_x100=100,
+                force_x10=force_x10,
+                duration_s=duration_s,
+                force_enable=force_enable,
+                wait_ack=True,
+            )
+
+        return self._motion_cmd("start_massage", _body)
+
+    @staticmethod
+    def _calibration_allows_motion(cal_status: Optional[int], policy) -> bool:
+        """Whether a physical start may proceed for the active profile.
+
+        PHYSICAL_CALIBRATED requires a valid calibration (status 3). Demo
+        profiles additionally accept status 0 (host program reports no
+        calibration), which must NOT silently authorise a calibrated deploy.
+        """
+        try:
+            status = int(cal_status) if cal_status is not None else None
+        except (TypeError, ValueError):
+            status = None
+        if status == int(State.RUNNING) or status == 3:  # 3 == calibrated/valid
+            return True
+        if status == 0 and policy.allows_demo_no_calibration:
+            return True
+        return False
 
     def stop_massage(self) -> Dict[str, Any]:
-        """Send CMD=0 (stop). Escalates to hard-stop if URScript does not ACK within 0.4 s."""
-        logger.info("stop_massage: Sending CMD=0 (soft stop)...")
-        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
+        """Send CMD=0 and report the *verified* outcome, not just the send.
 
-        # Brief wait then confirm ACK
-        time.sleep(0.4)
-        current_sent = self._seq
-        urs = self.read_urscript_registers()
-        ack_received = urs.get("ok") and int(urs.get("ack_seq", -1)) == int(current_sent)
+        A request having been written is NOT the same as verified motion stopped.
+        ``ok`` is True only when the host program ACKed the stop AND reported
+        IDLE. When that cannot be proven the result is reported as unverified /
+        faulted so callers never mistake a silent robot for a safe one. The
+        hardware e-stop remains independent of this software.
+        """
+        cmd_id = self._new_cmd_id("stop")
+        logger.info("stop_massage: %s sending CMD=0 (soft stop)...", cmd_id)
+        result: Dict[str, Any] = {
+            "cmd_id": cmd_id,
+            "command_sent": False,
+            "soft_stop_acknowledged": False,
+            "fallback_required": False,
+            "fallback_available": self._hard_stop_available(),
+            "fallback_attempted": False,
+            "fallback_result": None,
+            "host_state": None,
+            "robot_state": None,
+            "verified_idle": False,
+            "error_code": None,
+            "ok": False,
+        }
 
-        if not ack_received:
-            logger.warning("stop_massage: ACK not received after 0.4 s — escalating to hard-stop")
-            self._hard_stop_rtde_control()
-            # Restore speed slider so the URScript recovery movel can execute.
-            # Do NOT zero the speed here: the .urs handles its own stop and
-            # needs the speed slider at 1.0 to move back to the start pose.
-            self._restore_speed_slider()
-            # Re-send CMD=0 with a fresh seq so URScript registers the stop
-            self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
-            result["fallback_triggered"] = True
+        send = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=True, ack_timeout_s=0.6)
+        result["command_sent"] = bool(send.get("ok") or "seq" in send)
+        seq = send.get("seq")
+        urs = send.get("urscript") or self.read_urscript_registers()
+        if urs.get("ok") and seq is not None:
+            result["soft_stop_acknowledged"] = int(urs.get("ack_seq", -1)) == int(seq)
+
+        # Re-read after a brief settle to capture a state transition.
+        if not result["soft_stop_acknowledged"]:
+            time.sleep(0.2)
+            urs = self.read_urscript_registers()
+
+        host_state = int(urs["state"]) if urs.get("ok") and urs.get("state") is not None else None
+        result["host_state"] = host_state
+        result["verified_idle"] = host_state == int(State.IDLE)
+
+        if not (result["soft_stop_acknowledged"] and result["verified_idle"]):
+            result["fallback_required"] = True
+            if result["fallback_available"]:
+                result["fallback_attempted"] = True
+                fb = self._hard_stop_rtde_control_result()
+                result["fallback_result"] = fb
+                # Give the hard stop a moment, then re-probe idle.
+                time.sleep(0.3)
+                urs2 = self.read_urscript_registers()
+                if urs2.get("ok") and urs2.get("state") is not None:
+                    host_state = int(urs2["state"])
+                    result["host_state"] = host_state
+                    result["verified_idle"] = host_state == int(State.IDLE)
+
+        # Best-effort robot mode for diagnostics (non-authoritative).
+        dbg = self.get_dashboard_debug()
+        if dbg.get("ok"):
+            result["robot_state"] = {
+                "programState": dbg.get("programState"),
+                "robotmode": dbg.get("robotmode"),
+                "safetystatus": dbg.get("safetystatus"),
+            }
+
+        if result["verified_idle"] and result["soft_stop_acknowledged"]:
+            result["ok"] = True
+            logger.info("stop_massage: %s verified idle.", cmd_id)
+            # A successful stop resolves any prior uncertain state.
+            self.clear_fault()
         else:
-            logger.info("stop_massage: Soft stop ACK confirmed.")
-
+            result["error_code"] = "stop_unverified"
+            result["error"] = (
+                "STOP was sent but the robot could not be confirmed idle. "
+                "Treat motion state as uncertain; verify physically / reconnect."
+            )
+            # Do not latch a hard fault if already faulted, but make motion block.
+            self.mark_faulted("stop_unverified")
         return result
+
+    def _hard_stop_available(self) -> bool:
+        if os.getenv("UR10E_HARD_STOP_ENABLE", "0").strip().lower() not in ("1", "true", "yes", "on"):
+            return False
+        try:
+            import rtde_control  # noqa: F401
+        except Exception:
+            return False
+        return bool(self._ip)
+
+    def _hard_stop_rtde_control_result(self) -> Dict[str, Any]:
+        """Structured variant of _hard_stop_rtde_control for stop reporting."""
+        try:
+            self._hard_stop_rtde_control()
+            # _hard_stop is best-effort and silent; infer success from no raise.
+            return {"ok": True, "note": "RTDEControl speedStop/stopJ invoked"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def pause_massage(self) -> Dict[str, Any]:
         """
         Send CMD=5 (pause).
         URScript stops motion immediately but remembers the active mode.
         Call resume_massage() to restart from current pose.
+
+        Pause halts motion, so it stays available like STOP and is NOT gated on
+        the full motion preflight.
         """
         logger.info("pause_massage: Sending CMD=5 (pause)...")
         if not self.rtde_io:
-            return {"ok": False, "error": "rtde_io not connected"}
+            return {"ok": False, "error_code": "robot_unavailable", "error": "rtde_io not connected"}
         return self.send_mode(5, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=True)
 
     def resume_massage(self) -> Dict[str, Any]:
@@ -1042,20 +1384,29 @@ class UR10eMiddlewareLocalMode:
         Send CMD=6 (resume).
         URScript restores the previously paused mode and restarts motion from current TCP pose.
         Returns an error if nothing was paused (URScript will ACK with STATE_IDLE).
+
+        Resume causes physical motion, so it runs under the motion guard with
+        the shared preflight applied.
         """
+        def _body(cmd_id: str) -> Dict[str, Any]:
+            if not self.rtde_io:
+                return {"ok": False, "error_code": "robot_unavailable", "error": "rtde_io not connected"}
+            preflight = self._motion_preflight()
+            if not preflight.get("ok"):
+                return preflight
+            result = self.send_mode(6, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=True)
+            if result.get("ok"):
+                urs = result.get("urscript") or {}
+                if int(urs.get("state", 0)) != int(State.RUNNING):
+                    result["warning"] = "resume sent but URScript did not transition to RUNNING (was nothing paused?)"
+            return result
+
         logger.info("resume_massage: Sending CMD=6 (resume)...")
-        if not self.rtde_io:
-            return {"ok": False, "error": "rtde_io not connected"}
-        result = self.send_mode(6, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=True)
-        if result.get("ok"):
-            urs = result.get("urscript") or {}
-            if int(urs.get("state", 0)) != 1:  # STATE_RUNNING = 1
-                result["warning"] = "resume sent but URScript did not transition to RUNNING (was nothing paused?)"
-        return result
+        return self._motion_cmd("resume", _body)
 
     def adjust_speed(self, delta: float) -> Dict[str, Any]:
         if not self.rtde_io:
-            return {"ok": False, "error": "rtde_io not connected"}
+            return {"ok": False, "error_code": "robot_unavailable", "error": "rtde_io not connected"}
         try:
             self._speed_scale_x100 = max(10, min(200, int(self._speed_scale_x100 + delta * 100)))
             self.rtde_io.setInputIntRegister(IN_SPEED_X100, int(self._speed_scale_x100))
@@ -1065,13 +1416,23 @@ class UR10eMiddlewareLocalMode:
 
     def start_jog(self, direction: str, duration_s: Optional[float] = None) -> Dict[str, Any]:
         mode_id = CMD_JOG_Z_UP if direction == "z_up" else CMD_JOG_Z_DOWN
-        result = self.send_mode(mode_id, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
-        if duration_s and duration_s > 0:
-            stop_at = time.time() + float(duration_s)
-            while time.time() < stop_at:
-                time.sleep(0.02)
-            self.stop_massage()
-        return result
+
+        def _body(cmd_id: str) -> Dict[str, Any]:
+            cap = self._check_capability(mode_id)
+            if cap is not None:
+                return cap
+            preflight = self._motion_preflight()
+            if not preflight.get("ok"):
+                return preflight
+            result = self.send_mode(mode_id, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+            if duration_s and duration_s > 0:
+                stop_at = time.time() + float(duration_s)
+                while time.time() < stop_at:
+                    time.sleep(0.02)
+                result["stop"] = self.stop_massage()
+            return result
+
+        return self._motion_cmd("jog", _body)
 
     def save_calibration_point_a(self) -> Dict[str, Any]:
         logger.info("save_calibration_point_a: Sending CMD_SAVE_POINT_A=%d", CMD_SAVE_POINT_A)
@@ -1196,13 +1557,23 @@ class UR10eMiddlewareLocalMode:
         return result
 
     def move_to_calibration_point_a(self) -> Dict[str, Any]:
-        return self.send_mode(CMD_MOVE_TO_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+        return self._motion_cmd("move_to_a", lambda _c: self._guarded_motion_cmd(CMD_MOVE_TO_A))
 
     def move_to_calibration_point_b(self) -> Dict[str, Any]:
-        return self.send_mode(CMD_MOVE_TO_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+        return self._motion_cmd("move_to_b", lambda _c: self._guarded_motion_cmd(CMD_MOVE_TO_B))
 
     def move_to_safe_height(self) -> Dict[str, Any]:
-        return self.send_mode(CMD_MOVE_TO_SAFE, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+        return self._motion_cmd("move_to_safe", lambda _c: self._guarded_motion_cmd(CMD_MOVE_TO_SAFE))
+
+    def _guarded_motion_cmd(self, mode_id: int) -> Dict[str, Any]:
+        """Shared capability + preflight gate for a single register-motion command."""
+        cap = self._check_capability(mode_id)
+        if cap is not None:
+            return cap
+        preflight = self._motion_preflight()
+        if not preflight.get("ok"):
+            return preflight
+        return self.send_mode(mode_id, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
 
     def clear_calibration(self) -> Dict[str, Any]:
         self._cal_point_a_pose = None
@@ -1308,6 +1679,40 @@ class UR10eMiddlewareLocalMode:
             "safetystatus": self.dashboard.safety_status(),
             "loaded_program": self.dashboard.get_loaded_program(),
         }
+
+    # --------------------------
+    # Backend-authoritative operating state
+    # --------------------------
+    def get_operating_state(self) -> Dict[str, Any]:
+        """Single authoritative description of how the robot may be used now.
+
+        The frontend must render this rather than deciding physical vs simulated
+        from a raw connected flag.
+        """
+        preflight = self._motion_preflight() if self.connected else {"ok": False}
+        state_machine = self._derive_state_machine(preflight)
+        return {
+            "profile": self.profile,
+            "simulation_enabled": bool(self.simulation_enabled or self.profile == "SIMULATION"),
+            "connected": bool(self.connected),
+            "faulted": bool(self.faulted),
+            "state": state_machine,          # PHYSICAL_READY | PHYSICAL_NOT_READY | SIMULATION | FAULT
+            "motion_ready": state_machine == "PHYSICAL_READY",
+            "capabilities": self.capabilities.as_dict(),
+            "error_reason": self._fault_reason,
+        }
+
+    def _derive_state_machine(self, preflight: Dict[str, Any]) -> str:
+        if self.profile == "SIMULATION":
+            return "SIMULATION"
+        if self.faulted:
+            return "FAULT"
+        if not self.connected:
+            # Disconnected is NOT simulation unless simulation was explicitly enabled.
+            return "PHYSICAL_NOT_READY"
+        if preflight.get("ok"):
+            return "PHYSICAL_READY"
+        return "PHYSICAL_NOT_READY"
 
 
 # Convenience singleton-style factory (optional)
