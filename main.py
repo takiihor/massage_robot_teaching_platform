@@ -45,6 +45,20 @@ load_dotenv()
 
 # UR10e Local Mode configuration
 UR10E_IP = os.getenv("UR10E_IP", "192.168.1.10")
+AUTO_CONNECT_RTDE = os.getenv("AUTO_CONNECT_RTDE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+# Simulation must be an explicit teaching-mode choice.  A physical session must
+# never appear to start successfully merely because RTDE is disconnected.
+MASSAGE_SIMULATION_MODE = os.getenv("MASSAGE_SIMULATION_MODE", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 try:
     UR10E_TELEM_HZ = int(os.getenv("UR10E_TELEM_HZ", "5"))
 except Exception:
@@ -125,12 +139,7 @@ async def lifespan(app: FastAPI):
         # Keep startup minimal for massage-only mode.
 
         # UR10e 連線改為非阻塞背景任務，避免卡住前端啟動。
-        auto_connect_rtde = os.getenv("AUTO_CONNECT_RTDE", "0") not in (
-            "0",
-            "false",
-            "False",
-        )
-        if auto_connect_rtde:
+        if AUTO_CONNECT_RTDE:
 
             def _connect_robot():
                 try:
@@ -424,16 +433,26 @@ class LocalModeCommandRequest(BaseModel):
 ROBOT_OPERATION_LOCK = asyncio.Lock()
 
 
+async def _run_blocking_robot_op(fn, *args):
+    """Run a blocking RTDE call on every supported Python version.
+
+    ``asyncio.to_thread`` is only available from Python 3.9, while the deployed
+    virtual environment currently uses Python 3.8.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
+
+
 async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False):
     """Run one blocking robot operation at a time and fail closed on timeout."""
     async with ROBOT_OPERATION_LOCK:
         try:
-            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout_s)
+            return await asyncio.wait_for(_run_blocking_robot_op(fn, *args), timeout=timeout_s)
         except asyncio.TimeoutError:
             logger.error("Robot operation timed out after %.1fs: %s", timeout_s, getattr(fn, "__name__", fn))
             if stop_on_timeout:
                 try:
-                    await asyncio.wait_for(asyncio.to_thread(ur10e_middleware.stop_massage), timeout=2.0)
+                    await asyncio.wait_for(_run_blocking_robot_op(ur10e_middleware.stop_massage), timeout=2.0)
                 except Exception as stop_exc:
                     logger.error("Timeout fallback stop failed: %s", stop_exc)
             raise HTTPException(
@@ -452,6 +471,7 @@ async def robot_state():
     state = ur10e_middleware.get_state_snapshot()
     return {
         "connected": ur10e_middleware.connected,
+        "simulation_enabled": MASSAGE_SIMULATION_MODE,
         "state": state,
     }
 

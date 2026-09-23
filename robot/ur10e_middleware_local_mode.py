@@ -58,6 +58,13 @@ OUT_PROGRESS = 15
 OUT_ACK_SEQ = 16
 OUT_CAL_STATUS = 17
 
+UR_SCRIPT_ERROR_TEXT = {
+    0: "ok",
+    1: "unknown command",
+    2: "overforce stop",
+    3: "host program is not armed",
+}
+
 # Optional input float registers used by your URScript for calibration points
 # Align with ur10e_modes.urs and known RTDE IO support.
 IN_POSE_X = 24
@@ -249,6 +256,7 @@ class UR10eMiddlewareLocalMode:
         self._last_error_ts = None
         self._restore_speed_slider()
         self._write_force_enable(False)
+        self._resync_sequence_from_robot()
         self._neutralize_motion_on_connect()
 
         self._stop_evt.clear()
@@ -269,6 +277,25 @@ class UR10eMiddlewareLocalMode:
             logger.info("connect: sent startup STOP neutralization seq=%d", seq)
         except Exception:
             logger.warning("connect: failed to send startup STOP neutralization", exc_info=True)
+
+    def _resync_sequence_from_robot(self) -> None:
+        """Choose a new command sequence that cannot equal the host's last ACK.
+
+        The PolyScope host program only treats a command as new when its sequence
+        differs from the last one it processed.  A backend restart used to reset
+        ``_seq`` to zero and could repeat the host's sequence, leaving its safety
+        arming STOP unseen and making the next Start a no-op.
+        """
+        urs = self.read_urscript_registers()
+        if not urs.get("ok"):
+            return
+        try:
+            ack = int(urs["ack_seq"])
+        except (KeyError, TypeError, ValueError):
+            return
+        with self._lock:
+            self._seq = ack % 2_000_000_000
+        logger.info("connect: command sequence synchronized to host ACK %d", ack)
 
     def _rtde_receive_variables(self) -> List[str]:
         # Include output registers so ack/state reads work on RTDE builds that require
@@ -701,6 +728,62 @@ class UR10eMiddlewareLocalMode:
         if int(mode) != 0 and int(mode) != 5:
             self._restore_speed_slider()
 
+    def _motion_preflight(self) -> Dict[str, Any]:
+        """Return a clear, fail-closed explanation when the robot cannot move."""
+        if not self.rtde_io or not self.connected:
+            return {"ok": False, "error": "RTDE is not connected"}
+
+        dashboard = self.get_dashboard_debug()
+        if not dashboard.get("ok"):
+            return {
+                "ok": False,
+                "error": "Unable to read PolyScope safety state",
+                "dashboard": dashboard,
+            }
+
+        safety = str(dashboard.get("safetystatus") or "").upper()
+        program_state = str(dashboard.get("programState") or "").upper()
+        if any(token in safety for token in (
+            "EMERGENCY_STOP",
+            "PROTECTIVE_STOP",
+            "SAFEGUARD_STOP",
+            "SYSTEM_EMERGENCY_STOP",
+            "FAULT",
+            "VIOLATION",
+        )):
+            return {
+                "ok": False,
+                "error": "Robot safety stop is active",
+                "hint": "Release the physical emergency stop, clear the safety popup, power on, and release brakes in PolyScope.",
+                "dashboard": dashboard,
+            }
+        if "PLAYING" not in program_state:
+            return {
+                "ok": False,
+                "error": "PolyScope host program is not PLAYING",
+                "hint": "Load the massage host program and press Play in PolyScope before starting massage.",
+                "dashboard": dashboard,
+            }
+        return {"ok": True, "dashboard": dashboard}
+
+    def _arm_host_program(self) -> Dict[str, Any]:
+        """Send and confirm the STOP edge required by the local-mode URScript."""
+        result = self.send_mode(
+            0,
+            speed_x100=100,
+            force_x10=0,
+            duration_s=0,
+            force_enable=False,
+            wait_ack=True,
+        )
+        if not result.get("ok"):
+            result.setdefault("error", "Unable to arm the PolyScope host program")
+            result.setdefault(
+                "hint",
+                "Confirm the correct host program is PLAYING and its RTDE register map matches this middleware.",
+            )
+        return result
+
     def _hard_stop_rtde_control(self) -> None:
         """Optional hard stop via RTDEControlInterface (may be blocked in Local mode)."""
         if os.getenv("UR10E_HARD_STOP_ENABLE", "0").strip() not in ("1", "true", "yes"):
@@ -856,6 +939,14 @@ class UR10eMiddlewareLocalMode:
                     last_ack = urs.get("ack_seq")
                     if last_ack is not None and int(last_ack) == int(seq):
                         logger.info("send_mode: ACK received! ack_seq=%d", last_ack)
+                        error_code = int(urs.get("error_code", 0))
+                        if error_code != 0:
+                            return {
+                                "ok": False,
+                                "seq": seq,
+                                "error": f"URScript rejected command: {UR_SCRIPT_ERROR_TEXT.get(error_code, f'error code {error_code}')}",
+                                "urscript": urs,
+                            }
                         return {"ok": True, "seq": seq, "urscript": urs}
                 time.sleep(0.02)
 
@@ -879,6 +970,9 @@ class UR10eMiddlewareLocalMode:
         mode_id = self._resolve_mode_id(command.mode)
         if mode_id is None:
             return {"ok": False, "error": "unknown or missing mode"}
+        preflight = self._motion_preflight()
+        if not preflight.get("ok"):
+            return preflight
         cal = self.read_urscript_registers()
         if cal.get("ok"):
             cal_status = cal.get("cal_status")
@@ -891,6 +985,9 @@ class UR10eMiddlewareLocalMode:
                     "calibration_status": cal_status,
                     "calibration_status_text": self._calibration_status_to_text(cal_status),
                 }
+        arm_result = self._arm_host_program()
+        if not arm_result.get("ok"):
+            return arm_result
         force_x10 = self._resolve_force_x10(command.intensity)
         duration_s = self._resolve_duration_s(command.duration)
         force_enable = bool(getattr(command, "force_assist", False))
