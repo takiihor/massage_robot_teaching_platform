@@ -5,8 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ENV_PORT="$(sed -n 's/^PORT=//p' "$SCRIPT_DIR/.env" 2>/dev/null | tail -1)"
+# Port/host single source of truth: default to loopback and let app/settings.py
+# enforce the same policy. LAN binding is an explicit opt-in via
+# ALLOW_LAN_BINDING=1 + HOST. See docs/security/robot-control-boundary.md.
 PORT="${PORT:-${ENV_PORT:-5033}}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 PIDFILE="$SCRIPT_DIR/massage_robot.pid"
 LOGFILE="$SCRIPT_DIR/server.log"
 

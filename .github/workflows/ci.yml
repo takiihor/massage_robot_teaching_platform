@@ -1,0 +1,47 @@
+name: CI
+
+# No hardware is required or used: every job runs the suite in simulation with
+# fake RTDE transports and a throwaway state directory. Nothing here may move a
+# physical arm (see docs/robot/rtde-protocol.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python (3.8 deploy target)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Byte-compile every source file so syntax errors fail fast even where a
+      # module's runtime deps (fastapi / ur-rtde / azure) are not installed.
+      - name: Python syntax check
+        run: python -m compileall -q main.py app robot static tests
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # npm test => test:unit (incl. export-safety) + test:scenario + test:python
+      # (unittest discover over tests/python: protocol contract + safety).
+      # The Python tests import only fastapi/rtde-free modules, so no pip
+      # install is needed and no network/hardware is touched.
+      - name: Run full test suite (simulation, no hardware)
+        env:
+          MASSAGE_STATE_DIR: ${{ runner.temp }}/massage-state
+          MASSAGE_SIMULATION_MODE: "1"
+          ALLOW_LAN_BINDING: "0"
+        run: npm test
