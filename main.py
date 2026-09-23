@@ -8,6 +8,7 @@ from fastapi import (
     UploadFile,
     File,
     Form,
+    Depends,
 )
 from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,26 +44,22 @@ logger = logging.getLogger(__name__)
 # 載入環境變量
 load_dotenv()
 
-# UR10e Local Mode configuration
-UR10E_IP = os.getenv("UR10E_IP", "192.168.1.10")
-AUTO_CONNECT_RTDE = os.getenv("AUTO_CONNECT_RTDE", "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
-# Simulation must be an explicit teaching-mode choice.  A physical session must
-# never appear to start successfully merely because RTDE is disconnected.
-MASSAGE_SIMULATION_MODE = os.getenv("MASSAGE_SIMULATION_MODE", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-try:
-    UR10E_TELEM_HZ = int(os.getenv("UR10E_TELEM_HZ", "5"))
-except Exception:
-    UR10E_TELEM_HZ = 5
+# Validated application settings — single source of truth for host, port, CORS,
+# the operating profile, and the trusted robot controller allowlist. See
+# app/settings.py and docs/security/robot-control-boundary.md.
+from app.settings import load_settings, validate_robot_target, is_loopback
+
+SETTINGS = load_settings()
+
+# UR10e Local Mode configuration (all derived from validated SETTINGS)
+UR10E_IP = SETTINGS.default_robot_ip
+AUTO_CONNECT_RTDE = (not SETTINGS.simulation_enabled) and os.getenv(
+    "AUTO_CONNECT_RTDE", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+# Simulation must be an explicit teaching-mode choice; never inferred from a
+# dropped robot connection. See app/settings.py.
+MASSAGE_SIMULATION_MODE = SETTINGS.simulation_enabled
+UR10E_TELEM_HZ = SETTINGS.telemetry_hz
 
 # Azure Cognitive Services (for STT - Speech-to-Text) - CRITICAL for voice commands
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY")
@@ -109,15 +106,40 @@ def _csv_env(name: str, default: str) -> "list[str]":
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-CORS_ALLOWED_ORIGINS = _csv_env(
-    "CORS_ALLOWED_ORIGINS",
-    "http://127.0.0.1:5000,http://localhost:5000,http://127.0.0.1:5017,http://localhost:5017",
-)
+# CORS is a browser convenience, NOT a security boundary. The real control
+# boundary is the loopback-only default bind plus the operator token gate.
+CORS_ALLOWED_ORIGINS = SETTINGS.cors_allowed_origins
 
 try:
     MAX_STT_UPLOAD_BYTES = int(os.getenv("MAX_STT_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 except Exception:
     MAX_STT_UPLOAD_BYTES = 20 * 1024 * 1024
+
+# STT WebSocket resource limits so speech cannot starve the robot control path
+# (Sec 20). Audio chunk = base64 text length cap; per-session byte + duration
+# caps; idle timeout; bounded concurrent clients.
+try:
+    STT_MAX_CHUNK_B64_CHARS = int(os.getenv("STT_MAX_CHUNK_B64_CHARS", str(4 * 1024 * 1024)))
+except Exception:
+    STT_MAX_CHUNK_B64_CHARS = 4 * 1024 * 1024
+try:
+    STT_MAX_SESSION_BYTES = int(os.getenv("STT_MAX_SESSION_BYTES", str(64 * 1024 * 1024)))
+except Exception:
+    STT_MAX_SESSION_BYTES = 64 * 1024 * 1024
+try:
+    STT_MAX_SESSION_SECONDS = int(os.getenv("STT_MAX_SESSION_SECONDS", "1800"))
+except Exception:
+    STT_MAX_SESSION_SECONDS = 1800
+try:
+    STT_IDLE_TIMEOUT_S = float(os.getenv("STT_IDLE_TIMEOUT_S", "120"))
+except Exception:
+    STT_IDLE_TIMEOUT_S = 120.0
+try:
+    STT_MAX_CONCURRENT_SESSIONS = int(os.getenv("STT_MAX_CONCURRENT_SESSIONS", "4"))
+except Exception:
+    STT_MAX_CONCURRENT_SESSIONS = 4
+
+_STT_ACTIVE_SESSIONS = 0
 
 
 # 全局服务实例
@@ -125,10 +147,26 @@ from robot.ur10e_middleware_local_mode import (
     UR10eMiddlewareLocalMode,
     MassageCommand,
 )
+from robot.protocol import Capabilities
 
 ur10e_middleware = UR10eMiddlewareLocalMode(
     default_ip=UR10E_IP,
     telemetry_hz=UR10E_TELEM_HZ,
+)
+
+# Configure the authoritative operating profile + capabilities from validated
+# settings. Host-program capability negotiation would refine `capabilities`
+# after load; until then the demo profile is the safe default (massage only,
+# calibration/jog hidden) and PHYSICAL_CALIBRATED advertises them explicitly.
+_MW_CAPABILITIES = (
+    Capabilities.calibrated()
+    if SETTINGS.profile == "PHYSICAL_CALIBRATED"
+    else Capabilities.demo()
+)
+ur10e_middleware.configure_runtime(
+    profile=SETTINGS.profile,
+    simulation_enabled=SETTINGS.simulation_enabled,
+    capabilities=_MW_CAPABILITIES,
 )
 
 
@@ -246,7 +284,7 @@ if os.path.exists(assets_dir):
 @app.get("/")
 async def root(request: Request):
     """根路徑 - 返回主頁面或 API 資訊"""
-    port = request.url.port or int(os.getenv("PORT", 5000))
+    port = request.url.port or SETTINGS.port
     static_path = HTML_PATH
 
     html_content = ""
@@ -350,20 +388,41 @@ def log(message):
 # ===== API 端點 =====
 @app.get("/health")
 async def health_check():
-    """健康檢查"""
+    """Process liveness + robot readiness as distinct fields.
+
+    The HTTP process being alive does NOT mean a physical massage is ready, and
+    a disconnected robot does NOT mean the application is unhealthy.
+    """
     return {
-        "status": "healthy",
-        "robot_connected": ur10e_middleware.connected,
+        "status": "alive",
+        "app_ready": True,
+        "robot": ur10e_middleware.get_operating_state(),
         "timestamp": time.time(),
     }
 
 
+_CLIENT_LOG_ENABLED = os.getenv("ENABLE_CLIENT_LOG", "").strip().lower() in ("1", "true", "yes", "on")
+_client_log_window = {"count": 0, "reset_at": 0.0}
+_CLIENT_LOG_RATE = int(os.getenv("CLIENT_LOG_RATE_PER_MIN", "120"))
+
+
 @app.post("/api/client-log")
 async def client_log(req: ClientLogRequest):
+    """Forward client logs to the server terminal (development diagnostics).
+
+    Disabled unless ENABLE_CLIENT_LOG is set, and rate-limited, so it cannot be
+    used as an unbounded log-spam / sensitive-data ingestion endpoint in
+    production. Never accepts or logs secret material.
     """
-    Receive client-side logs and print to server terminal.
-    Intended for debugging only; callers should rate-limit on the client.
-    """
+    if not _CLIENT_LOG_ENABLED:
+        return {"status": "disabled"}
+    now = time.time()
+    if now >= _client_log_window["reset_at"]:
+        _client_log_window["count"] = 0
+        _client_log_window["reset_at"] = now + 60.0
+    if _client_log_window["count"] >= _CLIENT_LOG_RATE:
+        return {"status": "rate_limited"}
+    _client_log_window["count"] += 1
     try:
         level = (req.level or "info").lower()
         prefix = f"[ClientLog][{req.source}][{req.tag}]"
@@ -373,13 +432,13 @@ async def client_log(req: ClientLogRequest):
         payload = req.data
 
         if level == "debug":
-            logger.debug("%s %s | data=%s", prefix, msg, payload)
+            logger.debug("%s %s", prefix, msg)
         elif level in ("warn", "warning"):
-            logger.warning("%s %s | data=%s", prefix, msg, payload)
+            logger.warning("%s %s", prefix, msg)
         elif level == "error":
-            logger.error("%s %s | data=%s", prefix, msg, payload)
+            logger.error("%s %s", prefix, msg)
         else:
-            logger.info("%s %s | data=%s", prefix, msg, payload)
+            logger.info("%s %s", prefix, msg)
         return {"status": "ok"}
     except Exception as e:
         logger.error("client_log error: %s", e)
@@ -387,16 +446,71 @@ async def client_log(req: ClientLogRequest):
 
 
 # ===== UR10e Local Mode API =====
-@app.post("/robot/connect")
+def _client_is_loopback(request: Request) -> bool:
+    client = request.client
+    host = getattr(client, "host", None) or ""
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+
+
+def require_operator(request: Request) -> None:
+    """Authorization boundary for robot-changing operations (docs/security).
+
+    - Loopback clients (the local operator console) are trusted.
+    - Any other client must present a valid operator token via
+      ``X-Robot-Operator`` when ``ROBOT_OPERATOR_TOKEN`` is configured.
+    - With no token configured, non-loopback control is refused (fail closed),
+      so LAN exposure can never silently become unauthenticated robot control.
+    """
+    if _client_is_loopback(request):
+        return
+    token = SETTINGS.operator_token
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "ok": False,
+                "error_code": "operator_auth_required",
+                "message": "Non-local robot control requires an operator token. Set ROBOT_OPERATOR_TOKEN.",
+            },
+        )
+    provided = (request.headers.get("x-robot-operator") or "").strip()
+    if provided != token:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "ok": False,
+                "error_code": "operator_auth_failed",
+                "message": "Invalid or missing operator token.",
+            },
+        )
+
+
+@app.post("/robot/connect", dependencies=[Depends(require_operator)])
 async def robot_connect(req: RobotConnectRequest):
-    """Connect to UR10e via RTDE (local mode)."""
+    """Connect to UR10e via RTDE (local mode).
+
+    The controller address is validated against the trusted allowlist; a
+    browser cannot steer the backend to an arbitrary host (see
+    docs/security/robot-control-boundary.md).
+    """
+    target = validate_robot_target(SETTINGS, req.ip)
+    if not target.ok:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "ok": False,
+                "error_code": target.error_code,
+                "message": "Robot controller address is not in the trusted allowlist.",
+            },
+        )
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, ur10e_middleware.connect, req.ip)
+        await loop.run_in_executor(None, ur10e_middleware.connect, target.ip)
         return {
             "ok": True,
-            "ip": req.ip or ur10e_middleware.default_ip,
+            "ip": target.ip,
             "message": "connected",
+            "operating_state": ur10e_middleware.get_operating_state(),
             "calibration_restore": {
                 "ok": True,
                 "message": "auto restore disabled; use /calibration/restore manually",
@@ -407,7 +521,7 @@ async def robot_connect(req: RobotConnectRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/robot/disconnect")
+@app.post("/robot/disconnect", dependencies=[Depends(require_operator)])
 async def robot_disconnect():
     """Disconnect from UR10e."""
 
@@ -443,20 +557,35 @@ async def _run_blocking_robot_op(fn, *args):
     return await loop.run_in_executor(None, fn, *args)
 
 
-async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False):
-    """Run one blocking robot operation at a time and fail closed on timeout."""
+async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False, motion: bool = False):
+    """Run one blocking robot operation at a time and fail closed on timeout.
+
+    Timing out the asyncio future does NOT terminate the worker thread that is
+    performing the blocking RTDE call, so a timed-out motion operation may
+    still be executing when the lock releases. For motion ops we therefore mark
+    the controller FAULTED/UNCERTAIN on timeout: the middleware's single motion
+    slot stays held until the real call returns, and all later motion stays
+    blocked until the connection is re-established (deterministic resync).
+    """
     async with ROBOT_OPERATION_LOCK:
         try:
             return await asyncio.wait_for(_run_blocking_robot_op(fn, *args), timeout=timeout_s)
         except asyncio.TimeoutError:
             logger.error("Robot operation timed out after %.1fs: %s", timeout_s, getattr(fn, "__name__", fn))
+            if motion:
+                ur10e_middleware.mark_faulted(f"timeout_{getattr(fn, '__name__', 'op')}")
             if stop_on_timeout:
                 try:
                     await asyncio.wait_for(_run_blocking_robot_op(ur10e_middleware.stop_massage), timeout=2.0)
                 except Exception as stop_exc:
                     logger.error("Timeout fallback stop failed: %s", stop_exc)
             raise HTTPException(
-                status_code=504, detail=f"Operation timed out after {timeout_s:.1f}s"
+                status_code=504,
+                detail={
+                    "ok": False,
+                    "error_code": "robot_timeout",
+                    "message": f"Operation timed out after {timeout_s:.1f}s",
+                },
             )
 
 
@@ -467,11 +596,17 @@ async def healthz():
 
 @app.get("/robot/state")
 async def robot_state():
-    """Return latest RTDE telemetry snapshot (local mode)."""
+    """Authoritative operating state + latest RTDE telemetry snapshot.
+
+    ``operating_state`` is the single source of truth the UI must render for
+    physical-vs-simulation and readiness. It is computed by the backend, never
+    inferred by the frontend from connectivity.
+    """
     state = ur10e_middleware.get_state_snapshot()
     return {
         "connected": ur10e_middleware.connected,
         "simulation_enabled": MASSAGE_SIMULATION_MODE,
+        "operating_state": ur10e_middleware.get_operating_state(),
         "state": state,
     }
 
@@ -498,7 +633,7 @@ async def robot_stream():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.post("/robot/jog/z_up")
+@app.post("/robot/jog/z_up", dependencies=[Depends(require_operator)])
 async def robot_jog_z_up(req: Optional[RobotJogRequest] = None):
     """Manual jog: move Z upward. Press-and-hold in UI, release to stop."""
     try:
@@ -507,6 +642,7 @@ async def robot_jog_z_up(req: Optional[RobotJogRequest] = None):
             "z_up",
             (req.duration_s if req else None),
             timeout_s=6.0,
+            motion=True,
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -521,7 +657,7 @@ async def robot_jog_z_up(req: Optional[RobotJogRequest] = None):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/robot/jog/z_down")
+@app.post("/robot/jog/z_down", dependencies=[Depends(require_operator)])
 async def robot_jog_z_down(req: Optional[RobotJogRequest] = None):
     """Manual jog: move Z downward. Press-and-hold in UI, release to stop."""
     try:
@@ -530,6 +666,7 @@ async def robot_jog_z_down(req: Optional[RobotJogRequest] = None):
             "z_down",
             (req.duration_s if req else None),
             timeout_s=6.0,
+            motion=True,
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -546,9 +683,12 @@ async def robot_jog_z_down(req: Optional[RobotJogRequest] = None):
 
 @app.get("/api/health")
 async def local_mode_health():
+    """Application + STT readiness (distinct from robot physical readiness)."""
     return {
         "status": "ok",
-        "robot_connected": ur10e_middleware.connected,
+        "app_ready": True,
+        "stt_ready": AZURE_SPEECH_STT_ENABLED,
+        "robot": ur10e_middleware.get_operating_state(),
         "timestamp": time.time(),
     }
 
@@ -561,7 +701,7 @@ async def local_mode_telemetry():
     return payload
 
 
-@app.post("/api/command")
+@app.post("/api/command", dependencies=[Depends(require_operator)])
 async def local_mode_command(req: LocalModeCommandRequest):
     command = MassageCommand(
         mode=req.mode,
@@ -569,11 +709,11 @@ async def local_mode_command(req: LocalModeCommandRequest):
         duration=req.duration,
         force_assist=req.force_assist,
     )
-    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=4.0, stop_on_timeout=True)
+    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=4.0, stop_on_timeout=True, motion=True)
     return result
 
 
-@app.post("/api/stop")
+@app.post("/api/stop", dependencies=[Depends(require_operator)])
 async def local_mode_stop():
     return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0)
 
@@ -583,7 +723,7 @@ async def local_mode_stop():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@app.post("/massage/start")
+@app.post("/massage/start", dependencies=[Depends(require_operator)])
 async def massage_start(req: MassageCommandRequest):
     if not req.action and not req.mode:
         raise HTTPException(
@@ -596,33 +736,33 @@ async def massage_start(req: MassageCommandRequest):
         duration=req.duration,
         force_assist=req.force_assist,
     )
-    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=6.0, stop_on_timeout=True)
+    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=6.0, stop_on_timeout=True, motion=True)
     result["connected"] = ur10e_middleware.connected
     return result
 
 
-@app.post("/massage/stop")
+@app.post("/massage/stop", dependencies=[Depends(require_operator)])
 async def massage_stop():
     return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=4.0)
 
 
-@app.post("/massage/pause")
+@app.post("/massage/pause", dependencies=[Depends(require_operator)])
 async def massage_pause():
     return await _run_robot_op(ur10e_middleware.pause_massage, timeout_s=4.0)
 
 
-@app.post("/massage/resume")
+@app.post("/massage/resume", dependencies=[Depends(require_operator)])
 async def massage_resume():
-    return await _run_robot_op(ur10e_middleware.resume_massage, timeout_s=4.0)
+    return await _run_robot_op(ur10e_middleware.resume_massage, timeout_s=4.0, motion=True)
 
 
-@app.post("/massage/speed_faster")
+@app.post("/massage/speed_faster", dependencies=[Depends(require_operator)])
 async def massage_speed_faster(req: Optional[SpeedAdjustRequest] = None):
     delta = req.delta if req and req.delta else 0.1
     return await _run_robot_op(ur10e_middleware.adjust_speed, abs(delta), timeout_s=2.0)
 
 
-@app.post("/massage/speed_slower")
+@app.post("/massage/speed_slower", dependencies=[Depends(require_operator)])
 async def massage_speed_slower(req: Optional[SpeedAdjustRequest] = None):
     delta = req.delta if req and req.delta else -0.1
     return await _run_robot_op(
@@ -630,37 +770,37 @@ async def massage_speed_slower(req: Optional[SpeedAdjustRequest] = None):
     )
 
 
-@app.post("/massage/change_action_knead")
+@app.post("/massage/change_action_knead", dependencies=[Depends(require_operator)])
 async def massage_change_action_knead():
     return await massage_start(MassageCommandRequest(action="knead"))
 
 
-@app.post("/massage/change_action_push_up")
+@app.post("/massage/change_action_push_up", dependencies=[Depends(require_operator)])
 async def massage_change_action_push_up():
     return await massage_start(MassageCommandRequest(action="push_up"))
 
 
-@app.post("/massage/change_action_wave_push")
+@app.post("/massage/change_action_wave_push", dependencies=[Depends(require_operator)])
 async def massage_change_action_wave_push():
     return await massage_start(MassageCommandRequest(action="wave_push"))
 
 
-@app.post("/massage/change_action_spiral_press")
+@app.post("/massage/change_action_spiral_press", dependencies=[Depends(require_operator)])
 async def massage_change_action_spiral_press():
     return await massage_start(MassageCommandRequest(action="spiral_press"))
 
 
-@app.post("/massage/change_action_tap")
+@app.post("/massage/change_action_tap", dependencies=[Depends(require_operator)])
 async def massage_change_action_tap():
     return await massage_start(MassageCommandRequest(action="wave_push"))
 
 
-@app.post("/massage/change_action_massage")
+@app.post("/massage/change_action_massage", dependencies=[Depends(require_operator)])
 async def massage_change_action_massage():
     return await massage_start(MassageCommandRequest(action="spiral_press"))
 
 
-@app.post("/massage/change_action_acupressure")
+@app.post("/massage/change_action_acupressure", dependencies=[Depends(require_operator)])
 async def massage_change_action_acupressure():
     return await massage_start(MassageCommandRequest(action="knead"))
 
@@ -693,7 +833,7 @@ async def calibration_status():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/save-point-a")
+@app.post("/calibration/save-point-a", dependencies=[Depends(require_operator)])
 async def calibration_save_point_a():
     try:
         result = await _run_robot_op(
@@ -712,7 +852,7 @@ async def calibration_save_point_a():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/save-point-b")
+@app.post("/calibration/save-point-b", dependencies=[Depends(require_operator)])
 async def calibration_save_point_b():
     try:
         result = await _run_robot_op(
@@ -731,11 +871,11 @@ async def calibration_save_point_b():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/move-to-a")
+@app.post("/calibration/move-to-a", dependencies=[Depends(require_operator)])
 async def calibration_move_to_a():
     try:
         result = await _run_robot_op(
-            ur10e_middleware.move_to_calibration_point_a, timeout_s=15.0
+            ur10e_middleware.move_to_calibration_point_a, timeout_s=15.0, motion=True
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -750,11 +890,11 @@ async def calibration_move_to_a():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/move-to-b")
+@app.post("/calibration/move-to-b", dependencies=[Depends(require_operator)])
 async def calibration_move_to_b():
     try:
         result = await _run_robot_op(
-            ur10e_middleware.move_to_calibration_point_b, timeout_s=15.0
+            ur10e_middleware.move_to_calibration_point_b, timeout_s=15.0, motion=True
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -769,11 +909,11 @@ async def calibration_move_to_b():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/move-to-safe")
+@app.post("/calibration/move-to-safe", dependencies=[Depends(require_operator)])
 async def calibration_move_to_safe():
     try:
         result = await _run_robot_op(
-            ur10e_middleware.move_to_safe_height, timeout_s=15.0
+            ur10e_middleware.move_to_safe_height, timeout_s=15.0, motion=True
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -789,7 +929,7 @@ async def calibration_move_to_safe():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/clear")
+@app.post("/calibration/clear", dependencies=[Depends(require_operator)])
 async def calibration_clear():
     try:
         result = await _run_robot_op(ur10e_middleware.clear_calibration, timeout_s=5.0)
@@ -807,7 +947,7 @@ async def calibration_clear():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/calibration/restore")
+@app.post("/calibration/restore", dependencies=[Depends(require_operator)])
 async def calibration_restore():
     try:
         result = await _run_robot_op(
@@ -875,12 +1015,24 @@ async def websocket_stt_stream(websocket: WebSocket):
         await websocket.close()
         return
 
+    global _STT_ACTIVE_SESSIONS
+    if _STT_ACTIVE_SESSIONS >= STT_MAX_CONCURRENT_SESSIONS:
+        await websocket.send_json(
+            {"type": "error", "message": "Too many active STT sessions; retry shortly."}
+        )
+        await websocket.close(code=1013)
+        return
+    _STT_ACTIVE_SESSIONS += 1
+
     # Session state
     session_id = str(uuid.uuid4())
     language = "zh-HK"
     recognizer = None
     audio_stream = None
     is_running = False
+    session_bytes = 0
+    session_started = time.time()
+    result_task = None
     result_queue = asyncio.Queue()
     main_loop = asyncio.get_running_loop()
 
@@ -970,11 +1122,21 @@ async def websocket_stt_stream(websocket: WebSocket):
         result_task = asyncio.create_task(send_results())
 
         while True:
+            if time.time() - session_started > STT_MAX_SESSION_SECONDS:
+                await websocket.send_json({"type": "status", "state": "stopped", "reason": "max_duration"})
+                break
             try:
-                message = await websocket.receive_json()
+                message = await asyncio.wait_for(
+                    websocket.receive_json(), timeout=STT_IDLE_TIMEOUT_S
+                )
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "status", "state": "stopped", "reason": "idle_timeout"})
+                break
             except Exception:
                 break
 
+            if not isinstance(message, dict):
+                continue
             msg_type = message.get("type")
 
             if msg_type == "config":
@@ -1020,11 +1182,19 @@ async def websocket_stt_stream(websocket: WebSocket):
 
             elif msg_type == "audio":
                 if audio_stream and "data" in message:
+                    b64 = message["data"]
+                    if not isinstance(b64, str) or len(b64) > STT_MAX_CHUNK_B64_CHARS:
+                        await websocket.send_json({"type": "error", "message": "audio chunk too large"})
+                        break
+                    session_bytes += len(b64)
+                    if session_bytes > STT_MAX_SESSION_BYTES:
+                        await websocket.send_json({"type": "status", "state": "stopped", "reason": "max_bytes"})
+                        break
                     try:
-                        audio_data = base64.b64decode(message["data"])
+                        audio_data = base64.b64decode(b64, validate=True)
                         audio_stream.write(audio_data)
                     except Exception as e:
-                        logger.error(f"Error processing audio chunk: {e}")
+                        logger.warning("Dropped malformed STT audio chunk: %s", e)
 
             elif msg_type == "stop":
                 if recognizer:
@@ -1040,6 +1210,14 @@ async def websocket_stt_stream(websocket: WebSocket):
         logger.error(f"STT WebSocket error: {e}")
     finally:
         is_running = False
+        # Explicitly cancel and await the sender task so it cannot be orphaned
+        # and keep a dead socket or recognizer alive.
+        if result_task is not None:
+            result_task.cancel()
+            try:
+                await result_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if recognizer:
             try:
                 recognizer.stop_continuous_recognition()
@@ -1050,6 +1228,7 @@ async def websocket_stt_stream(websocket: WebSocket):
                 audio_stream.close()
             except Exception:
                 pass
+        _STT_ACTIVE_SESSIONS = max(0, _STT_ACTIVE_SESSIONS - 1)
         logger.info(f"STT WebSocket session ended: {session_id}")
 
 
@@ -1341,18 +1520,24 @@ async def stt_transcribe_health():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", 5000))
+    port = SETTINGS.port
+    # Bind address comes from validated settings: loopback-only by default.
+    # LAN exposure requires an explicit, valid HOST plus ALLOW_LAN_BINDING.
+    host = SETTINGS.host
     # Force HTTP for local WSL + Windows development; do not enable SSL even if certs exist.
-    protocol = "http"
+    protocol_scheme = "http"
 
+    display_host = "127.0.0.1" if SETTINGS.host in ("0.0.0.0", "::", "[::]") else SETTINGS.host
     print("Massage Control Server")
     print(
-        f"UI: {protocol}://127.0.0.1:{port}/  |  API docs: {protocol}://127.0.0.1:{port}/docs"
+        f"UI: {protocol_scheme}://{display_host}:{port}/  |  API docs: {protocol_scheme}://{display_host}:{port}/docs"
     )
+    if not is_loopback(SETTINGS.host):
+        print("WARNING: bound to a non-loopback address; robot controls are network-reachable.")
     print("Press Ctrl+C to stop.")
 
     run_options = {
-        "host": "0.0.0.0",
+        "host": host,
         "port": port,
         "reload": False,
         "access_log": False,
