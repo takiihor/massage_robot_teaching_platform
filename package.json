@@ -7,9 +7,10 @@
   "scripts": {
     "build": "./build.sh",
     "setup": "./build.sh",
-    "test": "npm run test:unit && npm run test:scenario",
+    "test": "npm run test:unit && npm run test:scenario && npm run test:python",
     "test:unit": "node --test tests/*.test.mjs static/year65-html-controls.test.mjs static/src/nursing/*.test.mjs static/src/voice/*.test.mjs",
     "test:scenario": "node tests/verify-scenarios.cjs && node tests/scenario-config.test.cjs",
+    "test:python": "python3 -m unittest discover -s tests/python -t .",
     "test:e2e": "playwright test -c playwright.config.cjs",
     "start": "./start.sh",
     "stop": "./kill_all.sh"
