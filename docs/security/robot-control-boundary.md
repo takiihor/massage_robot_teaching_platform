@@ -57,6 +57,16 @@ change robot state: `/robot/connect`, `/robot/disconnect`, `/robot/jog/*`,
 | --- | --- | --- |
 | `ROBOT_OPERATOR_TOKEN` | (unset) | Shared secret required for non-local control |
 
+**Client wiring.** The browser console sends `X-Robot-Operator` on every
+robot-changing POST (`static/src/massage/RobotController.js`), read from the
+runtime global `window.ROBOT_OPERATOR_TOKEN` (same pattern as `window.API_URL`).
+On the default loopback console the global is left unset and no header is sent —
+loopback stays trusted. For a LAN deployment the operator must set
+`window.ROBOT_OPERATOR_TOKEN` at runtime (e.g. a console bootstrap value or
+localStorage) so the token can reach the backend without ever being baked into
+the served HTML (which would leak it to any LAN visitor). A covered-by-test
+contract: `static/robot-controller.test.mjs`.
+
 ### 4. CORS from validated settings
 CORS origins are built from `SETTINGS.cors_allowed_origins`
 (`CORS_ALLOWED_ORIGINS`, defaulting to the loopback origins for the active

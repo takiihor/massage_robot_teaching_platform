@@ -1331,8 +1331,14 @@
             if (res.responseOk && res.data?.ok) {
                 addSystemMessage('Robot connected.', 'info');
             } else {
-                const code = res.data?.detail?.error_code || res.detail || `HTTP ${res.status}`;
-                addSystemMessage(`Robot connect failed: ${code}`, 'error');
+                const code = res.data?.detail?.error_code
+                    || (res.data?.detail && res.data.detail.message)
+                    || res.detail
+                    || `HTTP ${res.status}`;
+                const hint = String(code).match(/operator token/i)
+                    ? ' For LAN access set window.ROBOT_OPERATOR_TOKEN in the console.'
+                    : '';
+                addSystemMessage(`Robot connect failed: ${code}${hint}`, 'error');
             }
         } finally {
             await refreshRobotHealth();

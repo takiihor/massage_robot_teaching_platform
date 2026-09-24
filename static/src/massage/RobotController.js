@@ -3,6 +3,23 @@ function _getApiUrl() {
 }
 
 /*
+ * Operator auth header for robot-changing endpoints.
+ *
+ * The backend trusts loopback clients but requires X-Robot-Operator for any
+ * non-local client when ROBOT_OPERATOR_TOKEN is configured
+ * (docs/security/robot-control-boundary.md). On the local console the global is
+ * unset, so no header is sent and loopback access still works; for a LAN
+ * deployment the operator supplies the token at runtime via
+ * window.ROBOT_OPERATOR_TOKEN (same runtime-config pattern as window.API_URL).
+ */
+function _robotHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = ((window.ROBOT_OPERATOR_TOKEN || window.__ROBOT_OPERATOR_TOKEN) || '').trim();
+    if (token) headers['X-Robot-Operator'] = token;
+    return headers;
+}
+
+/*
  * Module: RobotController
  * Purpose: Robot command transport and telemetry helpers.
  * Exports: sendRobotCommand, sendRobotJog, sendCalibrationCommand,
@@ -59,7 +76,7 @@ export async function sendRobotCommand(endpoint, payload = {}, context = {}) {
 
             const response = await fetch(url, {
                 method,
-                headers: { 'Content-Type': 'application/json' },
+                headers: _robotHeaders(),
                 body: body ? JSON.stringify(body) : null
             });
             if (!response.ok) {
@@ -87,7 +104,7 @@ export async function sendRobotJog(endpoint, payload = {}) {
         try {
             const response = await fetch(`${_getApiUrl()}${endpoint}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: _robotHeaders(),
                 body: JSON.stringify(payload || {})
             });
             if (!response.ok) {
@@ -109,7 +126,7 @@ export async function sendCalibrationCommand(endpoint) {
         try {
             const response = await fetch(`${_getApiUrl()}${endpoint}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: _robotHeaders(),
                 body: JSON.stringify({})
             });
             if (!response.ok) {
@@ -151,11 +168,16 @@ export async function connectRobot(ip) {
         try {
             const response = await fetch(`${_getApiUrl()}/robot/connect`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: _robotHeaders(),
                 body: JSON.stringify({ ip })
             });
             if (!response.ok) {
-                return { responseOk: false, status: response.status };
+                let detail = '';
+                try {
+                    const err = await response.json();
+                    detail = err?.detail ? (typeof err.detail === 'string' ? err.detail : (err.detail.message || err.detail.error_code || JSON.stringify(err.detail))) : '';
+                } catch (e) { /* ignore */ }
+                return { responseOk: false, status: response.status, detail };
             }
             const data = await response.json();
             return { responseOk: true, status: response.status, data };
@@ -166,7 +188,7 @@ export async function connectRobot(ip) {
 
 export async function disconnectRobot() {
         try {
-            const response = await fetch(`${_getApiUrl()}/robot/disconnect`, { method: 'POST' });
+            const response = await fetch(`${_getApiUrl()}/robot/disconnect`, { method: 'POST', headers: _robotHeaders() });
             if (!response.ok) {
                 let detail = '';
                 try {
@@ -184,7 +206,7 @@ export async function disconnectRobot() {
 
 export async function restoreCalibration() {
         try {
-            const response = await fetch(`${_getApiUrl()}/calibration/restore`, { method: 'POST' });
+            const response = await fetch(`${_getApiUrl()}/calibration/restore`, { method: 'POST', headers: _robotHeaders() });
             let data = null;
             try {
                 data = await response.json();

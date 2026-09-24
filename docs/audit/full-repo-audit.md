@@ -103,6 +103,12 @@ native-rate→16k resampling, browser fallback).
 - **P1 — connect/disconnect UI unwired** (Sec 15): `robotConnectBtn`,
   `robotDisconnectBtn`, `robotIpInput` exist in HTML + `RobotController`
   but no active handler binds them.
+- **P0 — frontend could not satisfy operator auth** (Sec 5, found on UI review):
+  `require_operator` requires `X-Robot-Operator` for non-loopback clients, but
+  `RobotController` sent it on no request, so the documented LAN opt-in was
+  non-functional (every command 403). ACTION: send the token from
+  `window.ROBOT_OPERATOR_TOKEN` across gated POSTs (verified by
+  `robot-controller.test.mjs`); surface the 403 reason in the connect UI.
 
 ### A4. `robot/config.json`
 - **P0 — stale register map** (Sec 8): `rtde_registers.output` claims registers
