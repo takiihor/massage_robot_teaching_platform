@@ -3,7 +3,8 @@
  *
  * Provides a unified interface for multiple STT providers with automatic fallback:
  * 1. Azure Speech SDK (Primary) - Best Cantonese support, streaming
- * 2. Browser Web Speech API (Fallback) - Offline capable
+ * 2. Browser Web Speech API (Fallback) - no API key; uses the browser vendor's
+ *    cloud recogniser, so it still requires a network connection (NOT offline).
  *
  * Note: Azure OpenAI Whisper has been removed
  *
