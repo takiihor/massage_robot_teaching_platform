@@ -175,7 +175,48 @@ test('runtime provider failure preserves its cause when no fallback is available
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(service.isActive(), false);
+  assert.equal(azure.isListening, false);
   assert.equal(events[0]?.error, 'socket transport failed');
+});
+
+test('terminal Azure failure releases resources and a later start captures again', async () => {
+  const { service, audioContexts, webSockets } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+  service.currentProvider = 'azure-speech-sdk';
+  azure.isAvailable = true;
+  service.providers.get('browser').isAvailable = false;
+  await service.start('en-US');
+  webSockets[0].open();
+  azure._reportProviderError('transport failed');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.isActive(), false);
+  assert.equal(azure.isListening, false);
+  assert.equal(audioContexts[0].state, 'closed');
+  assert.equal(webSockets[0].readyState, 3);
+  assert.equal(azure.stream, null);
+
+  await service.start('en-US');
+  assert.equal(service.isActive(), true);
+  assert.equal(audioContexts.length, 2);
+  assert.equal(webSockets.length, 2);
+  await service.stop();
+});
+
+test('terminal browser permission failure prevents automatic recognition restart', async () => {
+  const { service } = await createHarness();
+  service.currentProvider = 'browser';
+  await service.start('en-US');
+  const browser = service.providers.get('browser');
+  const recognition = browser.recognition;
+  let restarts = 0;
+  recognition.start = () => { restarts++; };
+  recognition.onerror({ error: 'not-allowed' });
+  await new Promise(resolve => setImmediate(resolve));
+  recognition.onend();
+  assert.equal(service.isActive(), false);
+  assert.equal(browser.isListening, false);
+  assert.equal(browser.recognition, null);
+  assert.equal(restarts, 0);
 });
 
 test('unexpected Azure WebSocket closure switches to the browser provider', async () => {

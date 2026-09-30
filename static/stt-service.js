@@ -870,6 +870,15 @@ class STTService {
         }
 
         // All providers failed
+        // Tear down the last provider too: otherwise browser recognition keeps
+        // auto-restarting and Azure can keep a microphone/socket open even
+        // though the service reports stopped. A later Start must be fresh.
+        const failedProvider = this.providers.get(this.currentProvider);
+        try {
+            await failedProvider?.stop();
+        } catch (error) {
+            console.warn('Failed to stop exhausted STT provider:', error);
+        }
         this.isListening = false;
         const errorMessage = lastError?.message || lastError?.error || 'All STT providers failed';
         this.eventBus.emit('stopped', { provider: this.currentProvider });
