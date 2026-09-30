@@ -378,12 +378,22 @@ class UR10eMiddlewareLocalMode:
         self.connected = False
 
     def _maybe_reconnect(self) -> None:
-        if not self._ip:
+        if not self._ip or self._stop_evt.is_set():
             return
         now = time.time()
         if now - self._last_reconnect_attempt < self._reconnect_backoff_s:
             return
         self._last_reconnect_attempt = now
+        # Native RTDE connect can hold the GIL for minutes against a lost robot,
+        # freezing HTTP and speech even when called from the telemetry thread.
+        try:
+            with socket.create_connection((self._ip, 30004), timeout=1.0):
+                pass
+        except OSError as exc:
+            self._mark_error(f"reconnect probe failed: {exc}")
+            return
+        if self._stop_evt.is_set():
+            return
         try:
             from rtde_receive import RTDEReceiveInterface as RTDEReceive
             from rtde_io import RTDEIOInterface as RTDEIO
@@ -398,6 +408,8 @@ class UR10eMiddlewareLocalMode:
             self.rtde_io = RTDEIO(self._ip)
             self.dashboard = DashboardClient(self._ip, timeout=self.dashboard_timeout)
             self.connected = True
+            self._resync_sequence_from_robot()
+            self._neutralize_motion_on_connect()
             self._clear_error()
         except Exception as exc:
             self._mark_error(f"reconnect failed: {exc}")
@@ -1000,29 +1012,41 @@ class UR10eMiddlewareLocalMode:
             wait_ack=True,
         )
 
+    def _wait_for_stop_ack(self, seq: int, timeout_s: float) -> Dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+        urs = {}
+        while True:
+            urs = self.read_urscript_registers()
+            if urs.get("ok") and int(urs.get("ack_seq", -1)) == seq:
+                if int(urs.get("error_code", 0)) != 0:
+                    return {"ok": False, "seq": seq, "error": "Robot rejected stop", "urscript": urs}
+                if int(urs.get("state", -1)) == 0:
+                    return {"ok": True, "seq": seq, "urscript": urs}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.02, remaining))
+        return {"ok": False, "seq": seq, "urscript": urs,
+                "error": "Robot stop was not confirmed. Retry Stop or use the pendant Stop button."}
+
     def stop_massage(self) -> Dict[str, Any]:
-        """Send CMD=0 (stop). Escalates to hard-stop if URScript does not ACK within 0.4 s."""
+        """Confirm STOP's own sequence and IDLE state before reporting success."""
         logger.info("stop_massage: Sending CMD=0 (soft stop)...")
         result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
+        if not result.get("ok"):
+            return result
+        confirmed = self._wait_for_stop_ack(result["seq"], 0.4)
+        if confirmed.get("ok"):
+            return confirmed
 
-        # Brief wait then confirm ACK
-        time.sleep(0.4)
-        current_sent = self._seq
-        urs = self.read_urscript_registers()
-        ack_received = urs.get("ok") and int(urs.get("ack_seq", -1)) == int(current_sent)
-
-        if not ack_received:
-            logger.warning("stop_massage: ACK not received after 0.4 s — escalating to hard-stop")
-            self._hard_stop_rtde_control()
-            # Restore the speed slider for future START/RESUME commands.
-            # The demo aborts on STOP; it does not perform a recovery move.
-            self._restore_speed_slider()
-            # Re-send CMD=0 with a fresh seq so URScript registers the stop
-            self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
-            result["fallback_triggered"] = True
-        else:
-            logger.info("stop_massage: Soft stop ACK confirmed.")
-
+        logger.warning("stop_massage: STOP not confirmed after 0.4 s; attempting fallback")
+        self._hard_stop_rtde_control()
+        # A future START/RESUME restores speed; do not raise the slider while
+        # a STOP is unconfirmed. Retry with a fresh sequence and verify it too.
+        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
+        if result.get("ok"):
+            result = self._wait_for_stop_ack(result["seq"], 1.0)
+        result["fallback_triggered"] = True
         return result
 
     def pause_massage(self) -> Dict[str, Any]:

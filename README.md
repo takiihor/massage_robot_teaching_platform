@@ -72,6 +72,23 @@ the installed tool before positioning the starting pose.
 
 The demo currently maps commands 1–4 to the mode-4 movement sequence.
 
+For a connected demo, open the UI at `http://127.0.0.1:PORT/` on the server
+computer (or use HTTPS on another computer), allow microphone access, and click
+once if the browser requests it. Connect to the pendant IP in Settings, then
+keep the host program PLAYING in PolyScope. RTDE connectivity alone does not
+mean the host program is running.
+
+Current demo behavior:
+
+- The UI's intensity selection does not change the RG2 gripping force: the demo
+  uses its script constants and the UI sends `force_assist: false`.
+- The UI timer sends Stop when the selected duration expires. Keep the demo tab
+  open and active until Stop is confirmed; the mode-4 script repeats until it
+  receives Stop/Pause and does not enforce the duration independently.
+- An unconfirmed robot Stop leaves the UI session active for retry. Automatic
+  reconnection sends Stop and resynchronizes command sequences; it does not
+  resume massage automatically.
+
 ## Stop
 
 ```bash
@@ -83,7 +100,7 @@ The demo currently maps commands 1–4 to the mode-4 movement sequence.
 ```bash
 npm test
 npm run test:e2e
-venv/bin/python -m unittest discover -s tests -p 'test_robot_reference_frame.py' -v
+venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 The robot reference-frame tests execute the script's motion logic with simulated
