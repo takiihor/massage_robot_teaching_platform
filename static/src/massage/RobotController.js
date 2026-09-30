@@ -74,7 +74,8 @@ export async function sendRobotCommand(endpoint, payload = {}, context = {}) {
             }
             const data = await response.json();
             console.log(`🤖 Robot command ${endpoint}:`, data);
-            window.__lastRobotApiResult = { endpoint, ok: data.ok ?? true, status: response.status, message: data.message || data.error || '' };
+            const message = [data.error || data.message, data.hint].filter(Boolean).join(' ');
+            window.__lastRobotApiResult = { endpoint, ok: data.ok ?? true, status: response.status, message };
             return data.ok ?? true;
         } catch (error) {
             console.warn(`⚠️ Robot command ${endpoint} failed:`, error.message);
@@ -155,7 +156,10 @@ export async function connectRobot(ip) {
                 body: JSON.stringify({ ip })
             });
             if (!response.ok) {
-                return { responseOk: false, status: response.status };
+                const data = await response.json().catch(() => null);
+                const detail = data?.detail || data?.error || `HTTP ${response.status}`;
+                return { responseOk: false, status: response.status,
+                    detail: typeof detail === 'string' ? detail : JSON.stringify(detail) };
             }
             const data = await response.json();
             return { responseOk: true, status: response.status, data };

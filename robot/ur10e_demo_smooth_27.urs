@@ -190,22 +190,6 @@ def rg2_cycles_interruptible(prog):
   return False
 end
 
-def move_tcp_offset_interruptible(dx, dy, dz, steps, prog):
-  i = 0
-  stepx = dx / steps
-  stepy = dy / steps
-  stepz = dz / steps
-  while i < steps:
-    if check_stop_or_pause(prog) > 0:
-      return True
-    end
-    target = pose_trans(get_actual_tcp_pose(), p[stepx, stepy, stepz, 0, 0, 0])
-    movel(target, a = A_SLOW, v = V_SLOW, r = R_BLEND)
-    i = i + 1
-  end
-  return False
-end
-
 def move_to_pose_interruptible(target_pose, steps, prog):
   i = 0
   cur = get_actual_tcp_pose()
@@ -218,10 +202,23 @@ def move_to_pose_interruptible(target_pose, steps, prog):
     py = cur[1] + (target_pose[1] - cur[1]) * a
     pz = cur[2] + (target_pose[2] - cur[2]) * a
     waypoint = p[px, py, pz, target_pose[3], target_pose[4], target_pose[5]]
-    movel(waypoint, a = A_SLOW, v = V_SLOW, r = R_BLEND)
+    # Reach every leg endpoint exactly before gripping or starting the next leg.
+    # A blended endpoint can be skipped and must not become the next reference.
+    blend = R_BLEND
+    if i == steps - 1:
+      blend = 0
+    end
+    movel(waypoint, a = A_SLOW, v = V_SLOW, r = blend)
     i = i + 1
   end
   return False
+end
+
+def move_in_frame_interruptible(frame, dx, dy, dz, steps, prog):
+  # Offsets are absolute within the saved TCP frame, never accumulated from
+  # the live TCP pose (which can differ due to blending or force compliance).
+  target = pose_trans(frame, p[dx, dy, dz, 0, 0, 0])
+  return move_to_pose_interruptible(target, steps, prog)
 end
 
 # ============================================================
@@ -373,17 +370,20 @@ while True:
             break
           end
 
-          # NOTE: In this setup, physical "up" is opposite TCP +Z.
-          if move_tcp_offset_interruptible(0, 0, -RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
+          # In this setup, physical "up" is opposite TCP +Z. All stations
+          # share the original TCP frame, even when that frame is rotated.
+          station_y = elapsed * RG2_STEP_Y_M
+          next_station_y = (elapsed + 1) * RG2_STEP_Y_M
+          if move_in_frame_interruptible(start_pose, 0, station_y, -RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
             completed_normally = False
             break
           end
-          if move_tcp_offset_interruptible(0, RG2_STEP_Y_M, 0, MOVE_STEPS_YZ, prog):
+          if move_in_frame_interruptible(start_pose, 0, next_station_y, -RG2_STEP_UP_M, MOVE_STEPS_YZ, prog):
             completed_normally = False
             break
           end
 
-          if move_tcp_offset_interruptible(0, 0, RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
+          if move_in_frame_interruptible(start_pose, 0, next_station_y, 0, MOVE_STEPS_UP, prog):
             completed_normally = False
             break
           end
@@ -412,22 +412,17 @@ while True:
         end_force_safe()
 
         if completed_normally:
-          # Smooth transition to start: lift first, travel while lifted, then descend.
-          if move_tcp_offset_interruptible(0, 0, -RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
+          # Lift and travel in the SAME saved TCP frame as the forward path.
+          # Subtracting from start_pose[2] would instead move along BASE Z.
+          if move_in_frame_interruptible(start_pose, 0, elapsed * RG2_STEP_Y_M, -RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
             completed_normally = False
           else:
-            start_lift_pose = p[
-              start_pose[0],
-              start_pose[1],
-              start_pose[2] - RG2_STEP_UP_M,
-              start_pose[3],
-              start_pose[4],
-              start_pose[5]
-            ]
+            start_lift_pose = pose_trans(start_pose, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
             if move_to_pose_interruptible(start_lift_pose, MOVE_STEPS_RETURN, prog):
               completed_normally = False
             else:
-              if move_tcp_offset_interruptible(0, 0, RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
+              # Finish at the saved absolute pose, with no blend at the endpoint.
+              if move_to_pose_interruptible(start_pose, MOVE_STEPS_UP, prog):
                 completed_normally = False
               else:
                 sync()
@@ -560,7 +555,7 @@ while True:
 
       # Return to start pose (A) after a normal completion so next task starts at A
       if completed_normally:
-        movel(start_pose, a = A_SLOW, v = V_SLOW, r = R_BLEND)
+        movel(start_pose, a = A_SLOW, v = V_SLOW, r = 0)
         sync()
       end
     end

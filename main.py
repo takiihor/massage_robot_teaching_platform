@@ -77,6 +77,17 @@ AZURE_SPEECH_STT_ENABLED = bool(
 )
 
 
+# Short command phrases should finalize promptly after the speaker pauses.
+# Increase this for speakers who pause within a phrase (Azure range: 100–5000 ms).
+try:
+    STT_SEGMENTATION_SILENCE_MS = int(os.getenv("STT_SEGMENTATION_SILENCE_MS", "300"))
+    if not 100 <= STT_SEGMENTATION_SILENCE_MS <= 5000:
+        raise ValueError("out of range")
+except ValueError:
+    logger.warning("Invalid STT_SEGMENTATION_SILENCE_MS; using 300 ms")
+    STT_SEGMENTATION_SILENCE_MS = 300
+
+
 # HTML 文件配置
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -132,6 +143,43 @@ ur10e_middleware = UR10eMiddlewareLocalMode(
 )
 
 
+# ===== Robot reachability preflight =====
+# ur-rtde 1.6.x ships as a compiled extension whose blocking ``connect`` holds the
+# GIL for the whole TCP handshake.  Against an unroutable host that is ~136 s, which
+# starves the event loop and freezes *every* request (including /health) - and at
+# startup it happens before uvicorn binds its socket, so the server never comes up.
+# Probing in pure Python first (socket releases the GIL) fails in a couple of seconds.
+RTDE_PORTS = tuple(
+    p for p in (int(x) for x in _csv_env("UR10E_RTDE_PORTS", "30004")) if p > 0
+) or (30004,)
+try:
+    RTDE_PROBE_TIMEOUT_S = float(os.getenv("UR10E_PROBE_TIMEOUT_S", "3"))
+except Exception:
+    RTDE_PROBE_TIMEOUT_S = 3.0
+
+
+def _probe_robot_tcp(ip: str, timeout_s: float = None):
+    """Return (reachable, detail) for the robot's RTDE port(s).
+
+    Cheap, non-blocking-in-practice preflight so an unreachable robot produces a fast,
+    clear error instead of a long event-loop stall.
+    """
+    import socket
+
+    if not ip:
+        return False, "no robot IP configured"
+    if timeout_s is None:
+        timeout_s = RTDE_PROBE_TIMEOUT_S
+    detail = "no RTDE port configured"
+    for port in RTDE_PORTS or (30004,):
+        try:
+            with socket.create_connection((ip, port), timeout=timeout_s):
+                return True, f"tcp/{port} reachable"
+        except Exception as exc:
+            detail = f"tcp/{port} unreachable ({type(exc).__name__}: {exc})"
+    return False, detail
+
+
 # ===== Lifespan Context Manager =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -140,19 +188,27 @@ async def lifespan(app: FastAPI):
 
         # UR10e 連線改為非阻塞背景任務，避免卡住前端啟動。
         if AUTO_CONNECT_RTDE:
+            # Fail fast when the robot is off/absent so lifespan startup - and
+            # therefore socket binding - is never held up by a dead RTDE connect.
+            reachable, detail = _probe_robot_tcp(UR10E_IP)
+            if not reachable:
+                logger.warning(
+                    "UR10e RTDE auto-connect skipped: %s is %s", UR10E_IP, detail
+                )
+            else:
 
-            def _connect_robot():
+                def _connect_robot():
+                    try:
+                        ur10e_middleware.connect(UR10E_IP)
+                        logger.info("UR10e local-mode RTDE connected to %s", UR10E_IP)
+                    except Exception as exc:
+                        logger.warning("UR10e RTDE connect failed: %s", exc)
+
                 try:
-                    ur10e_middleware.connect(UR10E_IP)
-                    logger.info("UR10e local-mode RTDE connected to %s", UR10E_IP)
-                except Exception as exc:
-                    logger.warning("UR10e RTDE connect failed: %s", exc)
-
-            try:
-                loop = asyncio.get_running_loop()
-                loop.run_in_executor(None, _connect_robot)
-            except RuntimeError:
-                threading.Thread(target=_connect_robot, daemon=True).start()
+                    loop = asyncio.get_running_loop()
+                    loop.run_in_executor(None, _connect_robot)
+                except RuntimeError:
+                    threading.Thread(target=_connect_robot, daemon=True).start()
 
         yield
     except asyncio.CancelledError:
@@ -278,6 +334,7 @@ async def root(request: Request):
             "host": host,
             "protocol": protocol,
             "api_url": f"{protocol}://{host}:{port}",
+            "robot_ip": ur10e_middleware.default_ip,
         }
 
         injection = f"""<script>
@@ -390,18 +447,37 @@ async def client_log(req: ClientLogRequest):
 @app.post("/robot/connect")
 async def robot_connect(req: RobotConnectRequest):
     """Connect to UR10e via RTDE (local mode)."""
+    target_ip = req.ip or ur10e_middleware.default_ip
+
+    # Preflight before handing the socket to ur-rtde.  The compiled RTDE client
+    # blocks the GIL for the full TCP handshake, so an unreachable robot would
+    # otherwise stall every other request in the process.
+    reachable, detail = await asyncio.get_running_loop().run_in_executor(
+        None, _probe_robot_tcp, target_ip
+    )
+    if not reachable:
+        logger.warning("Robot connect rejected: %s is %s", target_ip, detail)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Robot {target_ip} is not reachable ({detail}). "
+                "Check the network route, the robot power, and the RTDE port."
+            ),
+        )
+
     try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, ur10e_middleware.connect, req.ip)
+        await _run_robot_op(ur10e_middleware.connect, target_ip, timeout_s=10.0)
         return {
             "ok": True,
-            "ip": req.ip or ur10e_middleware.default_ip,
+            "ip": target_ip,
             "message": "connected",
             "calibration_restore": {
                 "ok": True,
                 "message": "auto restore disabled; use /calibration/restore manually",
             },
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Robot connect failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -472,6 +548,7 @@ async def robot_state():
     return {
         "connected": ur10e_middleware.connected,
         "simulation_enabled": MASSAGE_SIMULATION_MODE,
+        "ip": ur10e_middleware._ip or ur10e_middleware.default_ip,
         "state": state,
     }
 
@@ -988,6 +1065,16 @@ async def websocket_stt_stream(websocket: WebSocket):
                     )
                     speech_config.speech_recognition_language = language
                     speech_config.output_format = speechsdk.OutputFormat.Detailed
+                    speech_config.set_property(
+                        speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,
+                        str(STT_SEGMENTATION_SILENCE_MS),
+                    )
+                    # Emit tentative words promptly for wake detection. Massage
+                    # parameters and start still require a final transcript.
+                    speech_config.set_property(
+                        speechsdk.PropertyId.SpeechServiceResponse_StablePartialResultThreshold,
+                        "1",
+                    )
 
                     stream_format = speechsdk.audio.AudioStreamFormat(
                         samples_per_second=16000, bits_per_sample=16, channels=1
@@ -1007,7 +1094,11 @@ async def websocket_stt_stream(websocket: WebSocket):
                     recognizer.canceled.connect(on_canceled)
                     recognizer.session_stopped.connect(on_session_stopped)
 
-                    recognizer.start_continuous_recognition()
+                    # SDK lifecycle calls wait synchronously; keep audio/result
+                    # delivery and other WebSocket sessions responsive meanwhile.
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, recognizer.start_continuous_recognition
+                    )
 
                     await websocket.send_json(
                         {
@@ -1028,7 +1119,9 @@ async def websocket_stt_stream(websocket: WebSocket):
 
             elif msg_type == "stop":
                 if recognizer:
-                    recognizer.stop_continuous_recognition()
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, recognizer.stop_continuous_recognition
+                    )
                 if audio_stream:
                     audio_stream.close()
                 await websocket.send_json({"type": "status", "state": "stopped"})
@@ -1042,7 +1135,9 @@ async def websocket_stt_stream(websocket: WebSocket):
         is_running = False
         if recognizer:
             try:
-                recognizer.stop_continuous_recognition()
+                await asyncio.get_running_loop().run_in_executor(
+                    None, recognizer.stop_continuous_recognition
+                )
             except Exception:
                 pass
         if audio_stream:

@@ -5,7 +5,11 @@
 
 import { test, expect } from '@playwright/test';
 
-const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+// Navigate relatively so the URL comes from playwright.config.cjs `baseURL`
+// (TEST_URL, then $PORT, then PORT= in .env).  The hard-coded
+// http://localhost:5000 here overrode that and pointed the suite at a dead port
+// whenever the app ran on anything other than 5000.
+const BASE_URL = process.env.TEST_URL || '/';
 const INSTRUCTOR_PIN = process.env.INSTRUCTOR_PIN || '1234';
 
 async function openInstructorOverlay(page) {

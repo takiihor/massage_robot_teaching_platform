@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------
-# RTDE Register Map (MUST match ur10e_modes_local_mode.urs)
+# RTDE Register Map (MUST match ur10e_demo_smooth_27.urs)
 # ---------------------------------------------------------------------
 # Input integers (UI/backend -> URScript host program)
 IN_CMD = 18            # 0 stop, 1..4 modes, 5 pause, 6 resume, 20/21 calibration etc (per your .urs)
@@ -66,7 +66,7 @@ UR_SCRIPT_ERROR_TEXT = {
 }
 
 # Optional input float registers used by your URScript for calibration points
-# Align with ur10e_modes.urs and known RTDE IO support.
+# Reserved for optional calibration-capable host programs; the demo does not use these.
 IN_POSE_X = 24
 IN_POSE_Y = 25
 IN_POSE_Z = 26
@@ -977,7 +977,7 @@ class UR10eMiddlewareLocalMode:
         if cal.get("ok"):
             cal_status = cal.get("cal_status")
             # Allow cal_status 0 (demo mode - no calibration) or 3 (fully calibrated)
-            # Demo script (ur10e_demo.urs) outputs 0 because it doesn't use calibration
+            # ur10e_demo_smooth_27.urs outputs 0 because it doesn't use calibration
             if cal_status not in (0, 3):
                 return {
                     "ok": False,
@@ -1014,9 +1014,8 @@ class UR10eMiddlewareLocalMode:
         if not ack_received:
             logger.warning("stop_massage: ACK not received after 0.4 s — escalating to hard-stop")
             self._hard_stop_rtde_control()
-            # Restore speed slider so the URScript recovery movel can execute.
-            # Do NOT zero the speed here: the .urs handles its own stop and
-            # needs the speed slider at 1.0 to move back to the start pose.
+            # Restore the speed slider for future START/RESUME commands.
+            # The demo aborts on STOP; it does not perform a recovery move.
             self._restore_speed_slider()
             # Re-send CMD=0 with a fresh seq so URScript registers the stop
             self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)

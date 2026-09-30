@@ -12,7 +12,7 @@
 //          speakAsMassageRobot, speakAsPatient
 // - Recognition: initBrowserSpeechRecognition, initSetupSpeechRecognition,
 //                startSetupSpeechRecognition, stopSetupSpeechRecognition,
-//                normalizeAsrForWakeWord, WakeWordDetector, getWakeWord, updateWakeWord,
+//                normalizeAsrForWakeWord, getASRLanguage, WakeWordDetector, getWakeWord, updateWakeWord,
 //                browserRecognition, _asrIsReady, lastRecognitionActivity, wakeWordDetector
 // - VoiceTriggers: VoiceTriggers, detectVoiceTrigger, getEngineeringKeyForTrigger,
 //                  isPatientQuestion, isMassageControl
@@ -42,6 +42,7 @@ import {
 } from './src/voice/TTSPlayer.js';
 import {
     WakeWordDetector,
+    getASRLanguage,
     getAsrReady,
     getBrowserRecognition,
     getLastRecognitionActivity,
@@ -113,6 +114,7 @@ export function attachModuleGlobals() {
     window.startSetupSpeechRecognition = startSetupSpeechRecognition;
     window.stopSetupSpeechRecognition = stopSetupSpeechRecognition;
     window.normalizeAsrForWakeWord = normalizeAsrForWakeWord;
+    window.getASRLanguage = getASRLanguage;
     window.WakeWordDetector = WakeWordDetector;
     window.getWakeWord = getWakeWord;
     window.updateWakeWord = updateWakeWord;

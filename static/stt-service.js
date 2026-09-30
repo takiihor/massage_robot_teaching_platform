@@ -93,6 +93,7 @@ class AzureSpeechProvider extends STTProvider {
         this.maxReconnectAttempts = 3;
         this.expectedStop = false;
         this.providerErrorReported = false;
+        this.audioSuspended = false;
     }
 
     async checkAvailability() {
@@ -127,16 +128,16 @@ class AzureSpeechProvider extends STTProvider {
         try {
             this.expectedStop = false;
             this.providerErrorReported = false;
-            // Get microphone stream
-            this.stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    sampleRate: 16000,
-                    echoCancellation: true,
-                    noiseSuppression: true
-                }
-            });
-
+            // getUserMedia only exists in secure contexts (https://, or
+            // http://localhost / http://127.0.0.1). On plain http://<LAN-IP>
+            // navigator.mediaDevices is undefined and the mic can never open,
+            // so fail with an actionable message instead of a TypeError.
+            if (!navigator.mediaDevices?.getUserMedia) {
+                throw new Error(
+                    'Microphone unavailable: open this page via http://127.0.0.1:PORT or https, ' +
+                    'then allow microphone access in the browser.'
+                );
+            }
             // Connect WebSocket
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/stt/stream`);
@@ -171,6 +172,22 @@ class AzureSpeechProvider extends STTProvider {
                 }
             };
 
+            // Warm the recognizer while microphone permission/device setup is
+            // pending, instead of paying the connection handshake afterwards.
+            // Get microphone stream
+            this.stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                }
+            });
+
+            if (!this.ws || this.ws.readyState >= WebSocket.CLOSING || this.providerErrorReported) {
+                throw new Error('Azure Speech connection failed during microphone startup');
+            }
+
             // Setup audio processing
             await this._setupAudioProcessing();
             this.isListening = true;
@@ -190,11 +207,30 @@ class AzureSpeechProvider extends STTProvider {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         this.audioContext = new AudioCtx();
 
+        // Chrome/Firefox start an AudioContext in 'suspended' until a user
+        // gesture. A suspended context never fires onaudioprocess, so the mic
+        // would stream nothing and no text would ever be recognized. Kick off a
+        // best-effort resume (never awaited: pre-gesture resume() stays pending
+        // and must not stall startup), retry on the next gesture, and flag the
+        // UI when a click/keypress is still needed.
+        const wasSuspended = this.audioContext.state === 'suspended';
+        this._resumeAudioContext();
+        this._armAudioResumeOnGesture();
+        this.audioSuspended = wasSuspended && this.audioContext.state === 'suspended';
+        if (this.audioSuspended) {
+            console.warn(
+                '[STT] Microphone pipeline is suspended until the next click/keypress. ' +
+                'Click anywhere on the page once to enable voice input.'
+            );
+        }
+
         this.source = this.audioContext.createMediaStreamSource(this.stream);
         this.captureSampleRate = this.audioContext.sampleRate;
 
         // Use ScriptProcessor for audio capture (deprecated but widely supported)
-        const bufferSize = 4096;
+        // Keep capture chunks near 20–65 ms at common device rates.
+        // 4096 samples added 85–256 ms before audio could reach Azure.
+        const bufferSize = 1024;
         this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
         this.processor.onaudioprocess = (e) => {
@@ -220,6 +256,58 @@ class AzureSpeechProvider extends STTProvider {
 
         this.source.connect(this.processor);
         this.processor.connect(this.audioContext.destination);
+    }
+
+    _resumeAudioContext() {
+        // Fire-and-forget: pre-gesture resume() never settles in Chrome/Firefox,
+        // so awaiting it would stall provider startup indefinitely.
+        if (!this.audioContext || this.audioContext.state !== 'suspended') return;
+        if (typeof this.audioContext.resume !== 'function') return;
+        try {
+            const result = this.audioContext.resume();
+            result?.then?.(() => {
+                if (this.audioContext && this.audioContext.state !== 'suspended' && this.audioSuspended) {
+                    this.audioSuspended = false;
+                    console.log('[STT] Microphone pipeline resumed.');
+                }
+            }).catch?.(() => {});
+        } catch (e) {
+            console.warn('[STT] AudioContext resume blocked until user gesture:', e?.message || e);
+        }
+    }
+
+    _armAudioResumeOnGesture() {
+        if (this._audioResumeArmed || typeof window === 'undefined') return;
+        if (typeof window.addEventListener !== 'function') return;
+        this._audioResumeArmed = true;
+        this._audioResumeHandler = () => {
+            if (!this.audioContext) return;
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume().catch(() => {});
+            } else if (this._audioResumeHandler
+                && typeof window.removeEventListener === 'function') {
+                window.removeEventListener('pointerdown', this._audioResumeHandler);
+                window.removeEventListener('keydown', this._audioResumeHandler);
+                this._audioResumeHandler = null;
+                this._audioResumeArmed = false;
+                if (this.audioSuspended) {
+                    this.audioSuspended = false;
+                    console.log('[STT] Microphone pipeline resumed by user gesture.');
+                }
+            }
+        };
+        window.addEventListener('pointerdown', this._audioResumeHandler);
+        window.addEventListener('keydown', this._audioResumeHandler);
+    }
+
+    _disarmAudioResumeOnGesture() {
+        if (this._audioResumeHandler && typeof window !== 'undefined'
+            && typeof window.removeEventListener === 'function') {
+            window.removeEventListener('pointerdown', this._audioResumeHandler);
+            window.removeEventListener('keydown', this._audioResumeHandler);
+        }
+        this._audioResumeHandler = null;
+        this._audioResumeArmed = false;
     }
 
     _resampleLinear(input, inputRate, outputRate) {
@@ -324,6 +412,7 @@ class AzureSpeechProvider extends STTProvider {
     }
 
     _cleanup() {
+        this._disarmAudioResumeOnGesture();
         if (this.processor) {
             this.processor.disconnect();
             this.processor = null;
@@ -513,35 +602,39 @@ class BrowserSTTProvider extends STTProvider {
         this.recognition.maxAlternatives = 3;
 
         this.recognition.onresult = (event) => {
-            const lastResult = event.results[event.results.length - 1];
-            const transcript = lastResult[0].transcript;
-            const confidence = lastResult[0].confidence || 0;
+            // A single event may finalize one phrase and contain the next interim.
+            // Deliver all changed results so completed commands are not lost.
+            for (let resultIndex = event.resultIndex ?? 0; resultIndex < event.results.length; resultIndex++) {
+                const lastResult = event.results[resultIndex];
+                const transcript = lastResult[0].transcript;
+                const confidence = lastResult[0].confidence || 0;
 
-            if (lastResult.isFinal) {
-                const alternatives = [];
-                for (let i = 1; i < lastResult.length && i < 4; i++) {
-                    alternatives.push({
-                        text: lastResult[i].transcript,
-                        confidence: lastResult[i].confidence || 0
-                    });
-                }
+                if (lastResult.isFinal) {
+                    const alternatives = [];
+                    for (let i = 1; i < lastResult.length && i < 4; i++) {
+                        alternatives.push({
+                            text: lastResult[i].transcript,
+                            confidence: lastResult[i].confidence || 0
+                        });
+                    }
 
-                if (this.resultCallback) {
-                    this.resultCallback({
-                        provider: this.name,
-                        text: transcript,
-                        confidence: confidence,
-                        alternatives: alternatives,
-                        isFinal: true
-                    });
-                }
-            } else {
-                if (this.partialCallback) {
-                    this.partialCallback({
-                        provider: this.name,
-                        text: transcript,
-                        confidence: confidence
-                    });
+                    if (this.resultCallback) {
+                        this.resultCallback({
+                            provider: this.name,
+                            text: transcript,
+                            confidence: confidence,
+                            alternatives: alternatives,
+                            isFinal: true
+                        });
+                    }
+                } else {
+                    if (this.partialCallback) {
+                        this.partialCallback({
+                            provider: this.name,
+                            text: transcript,
+                            confidence: confidence
+                        });
+                    }
                 }
             }
         };
@@ -766,6 +859,7 @@ class STTService {
                         reason: 'fallback'
                     });
 
+                    this.eventBus.emit('started', { provider: nextProvider, language: this.language });
                     return true;
                 } catch (e) {
                     console.error(`Failed to start ${nextProvider}:`, e);
@@ -778,6 +872,7 @@ class STTService {
         // All providers failed
         this.isListening = false;
         const errorMessage = lastError?.message || lastError?.error || 'All STT providers failed';
+        this.eventBus.emit('stopped', { provider: this.currentProvider });
         this.eventBus.emit('all-providers-failed', {
             lastProvider: this.currentProvider,
             error: errorMessage
@@ -876,6 +971,18 @@ class STTService {
 
     isActive() {
         return this.isListening;
+    }
+
+    // True when the current provider is up but its microphone pipeline is
+    // suspended until a user gesture (autoplay policy). The UI should prompt
+    // for one click/keypress instead of leaving the user speaking into silence.
+    needsUserGesture() {
+        const provider = this.providers.get(this.currentProvider);
+        if (!this.isListening || !provider) return false;
+        // Prefer the live AudioContext state: it also catches suspensions that
+        // happen after startup (e.g. tab hidden, device change).
+        if (provider.audioContext) return provider.audioContext.state === 'suspended';
+        return !!provider.audioSuspended;
     }
 }
 

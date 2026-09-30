@@ -5,22 +5,31 @@ import vm from 'node:vm';
 
 const STT_SERVICE_PATH = new URL('../static/stt-service.js', import.meta.url);
 
-async function createHarness() {
+async function createHarness(options = {}) {
   const source = await readFile(STT_SERVICE_PATH, 'utf8');
   const audioContexts = [];
   const webSockets = [];
+  const initialAudioState = options.audioState || 'running';
+  const audioBlocked = options.audioBlocked || false;
   const stream = {
     sampleRate: 44100,
     getTracks: () => [{ stop() {} }]
   };
 
   class FakeAudioContext {
-    constructor(options) {
-      this.options = options;
-      this.sampleRate = options?.sampleRate || stream.sampleRate;
+    constructor(contextOptions) {
+      this.options = contextOptions;
+      this.sampleRate = contextOptions?.sampleRate || stream.sampleRate;
       this.destination = {};
-      this.state = 'running';
+      this.state = initialAudioState;
       audioContexts.push(this);
+    }
+
+    resume() {
+      // Models a pre-gesture browser when audioBlocked: resume() never settles.
+      if (audioBlocked) return new Promise(() => {});
+      this.state = 'running';
+      return Promise.resolve();
     }
 
     createMediaStreamSource(mediaStream) {
@@ -30,8 +39,8 @@ async function createHarness() {
       return { connect() {}, disconnect() {} };
     }
 
-    createScriptProcessor() {
-      this.processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+    createScriptProcessor(bufferSize) {
+      this.processor = { bufferSize, connect() {}, disconnect() {}, onaudioprocess: null };
       return this.processor;
     }
 
@@ -77,12 +86,16 @@ async function createHarness() {
 
   const window = {
     location: { protocol: 'http:', host: 'localhost:5033' },
-    AudioContext: FakeAudioContext
+    AudioContext: FakeAudioContext,
+    SpeechRecognition: class { start() {} stop() {} },
+    addEventListener() {},
+    removeEventListener() {}
   };
+  const navigatorStub = { mediaDevices: { getUserMedia: async () => stream } };
   const context = vm.createContext({
     window,
     document: { addEventListener() {} },
-    navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    navigator: navigatorStub,
     WebSocket: FakeWebSocket,
     fetch: async () => ({ ok: false, json: async () => ({}) }),
     console: { log() {}, warn() {}, error() {} },
@@ -100,7 +113,8 @@ async function createHarness() {
   return {
     service: window.sttService,
     audioContexts,
-    webSockets
+    webSockets,
+    setMediaDevices: (value) => { navigatorStub.mediaDevices = value; }
   };
 }
 
@@ -210,4 +224,134 @@ test('intentional Azure stop does not start a fallback provider', async () => {
   assert.equal(browserStarts, 0);
   assert.equal(service.getCurrentProvider(), 'azure-speech-sdk');
   assert.equal(service.isActive(), false);
+});
+
+test('suspended AudioContext flags the need for a user gesture', async () => {
+  const { service } = await createHarness({ audioState: 'suspended', audioBlocked: true });
+  const azure = service.providers.get('azure-speech-sdk');
+
+  service.currentProvider = 'azure-speech-sdk';
+  azure.isAvailable = true;
+
+  await service.start('en-US');
+
+  assert.equal(azure.audioSuspended, true);
+  assert.equal(service.needsUserGesture(), true);
+});
+
+test('running AudioContext does not ask for a user gesture', async () => {
+  const { service } = await createHarness({ audioState: 'running' });
+  const azure = service.providers.get('azure-speech-sdk');
+
+  service.currentProvider = 'azure-speech-sdk';
+  azure.isAvailable = true;
+
+  await service.start('en-US');
+
+  assert.equal(azure.audioSuspended, false);
+  assert.equal(service.needsUserGesture(), false);
+});
+
+test('missing mediaDevices rejects with an actionable microphone message', async () => {
+  const { service, setMediaDevices } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+
+  service.currentProvider = 'azure-speech-sdk';
+  azure.isAvailable = true;
+  setMediaDevices(undefined);
+
+  await assert.rejects(azure.start('en-US'), /Microphone unavailable/);
+});
+
+
+test('Azure capture streams each small chunk without waiting for a larger batch', async () => {
+  const { service, audioContexts, webSockets } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+  await azure.start('zh-HK');
+  const ws = webSockets[0];
+  ws.open();
+  const { bufferSize } = audioContexts[0].processor;
+  assert.ok(bufferSize / audioContexts[0].sampleRate <= 0.025,
+    'capture must not add more than 25 ms at 44.1 kHz');
+  for (let i = 0; i < 3; i++) {
+    azure.processor.onaudioprocess({
+      inputBuffer: { getChannelData: () => new Float32Array(bufferSize).fill(0.25) }
+    });
+    const chunks = ws.sent.map(JSON.parse).filter(message => message.type === 'audio');
+    assert.equal(chunks.length, i + 1);
+    assert.equal(Buffer.from(chunks[i].data, 'base64').length,
+      Math.round(bufferSize * 16000 / 44100) * 2);
+  }
+  await azure.stop();
+});
+
+test('browser delivers completed phrases before the next interim in the same event', async () => {
+  const { service } = await createHarness();
+  const browser = service.providers.get('browser');
+  const delivered = [];
+  browser.onResult(result => delivered.push(['final', result.text]));
+  browser.onPartial(result => delivered.push(['partial', result.text]));
+  await browser.start('en-US');
+  const result = (text, isFinal) => Object.assign([{ transcript: text, confidence: 0.9 }], { isFinal });
+  browser.recognition.onresult({ resultIndex: 1, results: [
+    result('previous phrase', true),
+    result('mode one', true),
+    result('light', true),
+    result('ten minutes', false)
+  ] });
+  assert.deepEqual(delivered, [
+    ['final', 'mode one'], ['final', 'light'], ['partial', 'ten minutes']
+  ]);
+  await browser.stop();
+});
+
+
+test('startup fallback emits listening status and total failure clears it', async () => {
+  const { service } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+  const browser = service.providers.get('browser');
+  service.currentProvider = 'azure-speech-sdk';
+  azure.isAvailable = browser.isAvailable = true;
+  azure.start = async () => { throw new Error('Azure unavailable'); };
+  const started = [];
+  const stopped = [];
+  service.onStarted(event => started.push(event.provider));
+  service.onStopped(event => stopped.push(event.provider));
+  await service.start('en-US');
+  assert.deepEqual(started, ['browser']);
+  assert.equal(service.isActive(), true);
+  await service._handleProviderError('browser', { error: 'network' });
+  assert.deepEqual(stopped, ['browser']);
+  assert.equal(service.isActive(), false);
+});
+
+
+test('Azure connects while microphone permission is pending', async () => {
+  const { service, webSockets, setMediaDevices } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+  let grantMicrophone;
+  setMediaDevices({ getUserMedia: () => new Promise(resolve => { grantMicrophone = resolve; }) });
+  const starting = azure.start('en-US');
+  assert.equal(webSockets.length, 1, 'warm connection before microphone permission resolves');
+  webSockets[0].open();
+  assert.equal(JSON.parse(webSockets[0].sent[0]).type, 'config');
+  assert.equal(azure.processor, null);
+  grantMicrophone({ sampleRate: 44100, getTracks: () => [{ stop() {} }] });
+  await starting;
+  assert.equal(azure.isListening, true);
+  await azure.stop();
+});
+
+test('Azure startup connection failure cleans up a microphone granted afterwards', async () => {
+  const { service, webSockets, setMediaDevices } = await createHarness();
+  const azure = service.providers.get('azure-speech-sdk');
+  let grantMicrophone;
+  let trackStopped = false;
+  setMediaDevices({ getUserMedia: () => new Promise(resolve => { grantMicrophone = resolve; }) });
+  const starting = azure.start('en-US');
+  webSockets[0].closeUnexpectedly();
+  grantMicrophone({ sampleRate: 44100, getTracks: () => [{ stop() { trackStopped = true; } }] });
+  await assert.rejects(starting, /connection failed during microphone startup/);
+  assert.equal(trackStopped, true);
+  assert.equal(azure.isListening, false);
 });
