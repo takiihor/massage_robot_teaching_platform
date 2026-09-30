@@ -46,6 +46,7 @@ export class AudioManager {
         this.audioEl.preload = 'auto';
         this.current = null;
         this._token = 0;
+        this._requestToken = 0;
         this._pendingResolve = null;
     }
 
@@ -63,6 +64,7 @@ export class AudioManager {
                 current: this.current ? { assetId: this.current.assetId, priority: this.current.priority } : null
             });
             this._token += 1;
+            this._requestToken += 1;
             this.current = null;
             if (this._pendingResolve) {
                 this._pendingResolve({ ok: false, reason });
@@ -80,15 +82,36 @@ export class AudioManager {
         this.stop('barge-in');
     }
 
+    async prepareAsset(assetId) {
+        if (this.current) return false;
+        const requestToken = ++this._requestToken;
+        const asset = await AudioAssetLibrary.getAsset(assetId, { forPlayback: true });
+        if (requestToken !== this._requestToken || this.current || !asset?.url) return false;
+        this._setAssetSource(asset.url);
+        return true;
+    }
+
+    _setAssetSource(url) {
+        // Retain audio prepared before the wake phrase; restarting load() would
+        // throw away the buffered data just as the user needs the response.
+        if (this.audioEl.getAttribute('src') === url) return;
+        this.audioEl.src = url;
+        this.audioEl.load();
+    }
+
     async playAsset(assetId, { priority = AudioPriority.P1, ttlMs = 1000, interrupt = true, eventTime = Date.now() } = {}) {
+        const requestToken = ++this._requestToken;
         audioDebugLog('request', { assetId, priority, ttlMs, interrupt, eventTime });
         let asset;
         try {
-            asset = await AudioAssetLibrary.getAsset(assetId);
+            asset = await AudioAssetLibrary.getAsset(assetId, { forPlayback: true });
         } catch (e) {
             console.error('[AudioManager] Failed to load asset:', assetId, e);
             audioDebugLog('load_failed', { assetId, error: e?.message || String(e) });
             return { ok: false, dropped: true, reason: 'load_failed' };
+        }
+        if (requestToken !== this._requestToken) {
+            return { ok: false, dropped: true, reason: 'superseded' };
         }
         if (!asset?.url) {
             console.warn('[AudioManager] Missing asset:', assetId);
@@ -172,8 +195,7 @@ export class AudioManager {
             };
 
             try {
-                this.audioEl.src = asset.url;
-                this.audioEl.load();
+                this._setAssetSource(asset.url);
                 audioDebugLog('start', { assetId, url: asset.url });
                 let retried = false;
                 const attemptPlay = () => {

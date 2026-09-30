@@ -36,7 +36,7 @@
         },
         connection: {
             connected: false,
-            simulation: true
+            simulation: false
         },
         vitals: { ...DEFAULT_VITALS },
         instructor: {
@@ -52,6 +52,9 @@
     let renderTimer = null;
     let healthTimer = null;
     let sttUnsubscribers = [];
+    let robotConnectionPending = false;
+    let robotHealthRequest = 0;
+    let pendingMassageStart = null;
     let voiceSetupSnapshot = null;
     let voiceSetupProgress = null;
     let asrWakePhraseFragments = [];
@@ -114,23 +117,96 @@
     }
 
     async function refreshRobotHealth() {
+        const requestId = ++robotHealthRequest;
         try {
-            const response = await fetch('/robot/state', { cache: 'no-store' });
+            const response = await fetch(`${window.API_URL || ''}/robot/state`, { cache: 'no-store' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
+            if (requestId !== robotHealthRequest) return data;
+            state.connection.error = null;
+            state.connection.ip = data.ip || state.connection.ip;
             state.connection.connected = !!data.connected;
-            state.connection.simulation = !state.connection.connected;
+            state.connection.simulation = !state.connection.connected && data.simulation_enabled === true;
             const text = $('y65RobotStateText');
-            if (text) text.textContent = state.connection.connected ? 'Robot: Connected' : 'Robot: Simulation';
+            if (text) text.textContent = state.connection.connected ? 'Robot: Connected' : state.connection.simulation ? 'Robot: Simulation' : 'Robot: Disconnected';
             const dot = $('y65RobotStateDot');
             if (dot) dot.classList.toggle('offline', !state.connection.connected);
+            renderRobotConnectionSettings(true);
             return data;
         } catch (error) {
+            if (requestId !== robotHealthRequest) return null;
+            state.connection.error = `Unable to read robot connection: ${error.message || error}`;
             state.connection.connected = false;
-            state.connection.simulation = true;
+            state.connection.simulation = false;
             const text = $('y65RobotStateText');
-            if (text) text.textContent = 'Robot: Simulation';
+            if (text) text.textContent = 'Robot: Connection unavailable';
+            $('y65RobotStateDot')?.classList.add('offline');
+            renderRobotConnectionSettings(false);
             return null;
+        }
+    }
+
+    function renderRobotConnectionSettings(apiAvailable) {
+        if (robotConnectionPending) return;
+        const connected = currentRobotConnected();
+        const status = $('robotConnectionStatus');
+        if (status) status.textContent = connected
+            ? `🟢 Connected${state.connection.ip ? `: ${state.connection.ip}` : ''}`
+            : '⚪ Disconnected';
+        const api = $('robotApiStatusSettings');
+        if (api) api.textContent = apiAvailable ? 'API: Connected' : 'API: Unavailable';
+        const io = $('robotRtdeIoStatus');
+        if (io) io.textContent = connected ? 'RTDE IO: Connected' : 'RTDE IO: Disconnected';
+    }
+
+    async function changeRobotConnection(connect) {
+        if (robotConnectionPending) return;
+        if (window.currentMassageSession || pendingMassageStart) {
+            addSystemMessage('Stop the current session before changing the robot connection.', 'warning');
+            return;
+        }
+        const input = $('robotIpInput');
+        const ip = String(input?.value || '').trim();
+        if (connect && !ip) {
+            addSystemMessage('Enter the robot IP shown on the PolyScope pendant.', 'error');
+            return;
+        }
+        robotConnectionPending = true;
+        robotHealthRequest++; // Ignore an older poll while changing connections.
+        for (const id of ['robotConnectBtn', 'robotDisconnectBtn', 'robotIpInput']) {
+            if ($(id)) $(id).disabled = true;
+        }
+        if ($('robotConnectionStatus')) $('robotConnectionStatus').textContent = connect ? 'Connecting…' : 'Disconnecting…';
+        try {
+            const controller = window.RobotController;
+            const result = connect
+                ? await controller?.connectRobot?.(ip)
+                : await controller?.disconnectRobot?.();
+            if (!result?.responseOk || result.data?.ok === false) {
+                throw new Error(result?.detail || result?.data?.error || `Robot ${connect ? 'connection' : 'disconnect'} failed${result?.status ? ` (HTTP ${result.status})` : ''}`);
+            }
+            const health = await refreshRobotHealth();
+            if (!health || !!health.connected !== connect) {
+                throw new Error(state.connection.error || 'Backend could not confirm the robot connection state.');
+            }
+            if (connect) {
+                state.connection.ip = result.data?.ip || ip;
+                localStorage.setItem('robotIp', ip);
+                addSystemMessage(`Robot connected: ${state.connection.ip}. Load the massage host program and press Play on the pendant before starting.`, 'info');
+            } else {
+                addSystemMessage('Robot disconnected.', 'info');
+            }
+        } catch (error) {
+            // A failed reconnect may have closed the previous RTDE session.
+            await refreshRobotHealth();
+            addSystemMessage(`Robot connection failed: ${error.message || error}`, 'error');
+        } finally {
+            robotConnectionPending = false;
+            for (const id of ['robotConnectBtn', 'robotDisconnectBtn', 'robotIpInput']) {
+                if ($(id)) $(id).disabled = false;
+            }
+            renderRobotConnectionSettings(!state.connection.error);
+            syncYear65UI();
         }
     }
 
@@ -239,7 +315,9 @@
 
     async function sendRobotStart(command) {
         if (!currentRobotConnected()) {
-            return { ok: true, simulation: true, message: 'simulation mode: robot not connected' };
+            return state.connection.simulation
+                ? { ok: true, simulation: true }
+                : { ok: false, error: state.connection.error || 'Robot disconnected. Open Settings, enter the pendant IP, and click Connect.' };
         }
         if (!window.RobotController?.sendRobotCommand) {
             return { ok: false, error: 'RobotController unavailable' };
@@ -251,11 +329,14 @@
             force_assist: false
         };
         const ok = await window.RobotController.sendRobotCommand('start', payload, {});
-        return { ok: !!ok, simulation: false };
+        return { ok: !!ok, simulation: false, error: !ok
+            ? window.__lastRobotApiResult?.detail || window.__lastRobotApiResult?.message || 'Robot did not accept command'
+            : null };
     }
 
     async function sendRobotControl(endpoint) {
-        if (!currentRobotConnected()) return true;
+        // A lost connection must not turn a physical stop into a simulated success.
+        if (window.currentMassageSession?.simulation === true) return true;
         if (!window.RobotController?.sendRobotCommand) return false;
         return window.RobotController.sendRobotCommand(endpoint);
     }
@@ -270,7 +351,7 @@
             this.isPaused = false;
             this.ended = false;
             this._timer = null;
-            this._stopInFlight = false;
+            this._stopPromise = null;
         }
 
         getElapsedMs() {
@@ -288,10 +369,11 @@
             if (!robotResult.ok) {
                 throw new Error(robotResult.error || 'Robot did not accept command');
             }
+            this.simulation = !!robotResult.simulation;
             this.startedAt = Date.now();
             this._timer = setInterval(() => {
                 if (!this.ended && !this.isPaused && this.getRemainingSec() <= 0) {
-                    void this.stop('completed');
+                    void stopSession('completed');
                 }
                 syncYear65UI();
             }, 1000);
@@ -338,27 +420,30 @@
         }
 
         async stop(reason = 'manual') {
-            if (this._stopInFlight) return;
-            this._stopInFlight = true;
-            window.dispatchEvent(new CustomEvent('massageSessionEndRequested', { detail: { reason } }));
+            if (this.ended) return;
+            if (this._stopPromise) return this._stopPromise;
+            this._stopPromise = (async () => {
+                window.dispatchEvent(new CustomEvent('massageSessionEndRequested', { detail: { reason } }));
+                const ok = await sendRobotControl('stop');
+                if (!ok) throw new Error('Robot stop failed. Session remains active; retry stop.');
+                this.ended = true;
+                if (this._timer) {
+                    clearInterval(this._timer);
+                    this._timer = null;
+                }
+                state.uiMode = 'SETUP';
+                state.session.remainingSec = 0;
+                state.session.totalSec = 0;
+                window.currentMassageSession = null;
+                window.dispatchEvent(new CustomEvent('massageSessionEnded', { detail: { reason } }));
+                resetTeachingVisualsToSetupBaseline();
+                syncYear65UI();
+            })();
             try {
-                await sendRobotControl('stop');
-            } catch (error) {
-                console.warn('[stable-app] robot stop failed:', error);
+                await this._stopPromise;
+            } finally {
+                this._stopPromise = null;
             }
-            this.ended = true;
-            if (this._timer) {
-                clearInterval(this._timer);
-                this._timer = null;
-            }
-            state.uiMode = 'SETUP';
-            state.session.remainingSec = 0;
-            state.session.totalSec = 0;
-            window.currentMassageSession = null;
-            window.dispatchEvent(new CustomEvent('massageSessionEnded', { detail: { reason } }));
-            resetTeachingVisualsToSetupBaseline();
-            this._stopInFlight = false;
-            syncYear65UI();
         }
     }
 
@@ -373,24 +458,47 @@
     });
 
     async function startMassage() {
+        if (robotConnectionPending) {
+            addSystemMessage('Wait for the robot connection to finish, then start again.', 'warning');
+            return;
+        }
+        if (pendingMassageStart) return pendingMassageStart.promise;
         if (window.currentMassageSession) {
             addSystemMessage('A massage session is already running.', 'warning');
             return;
         }
-        try {
-            await refreshRobotHealth();
-            const session = new TeachingMassageSession(state.massage);
-            await session.start();
-            voiceSetupSnapshot = null;
-            voiceSetupProgress = null;
-            toggleStudentDrawer(false);
-            hideVoiceSetupBanner();
-        } catch (error) {
-            addSystemMessage(`Unable to start massage: ${error.message || error}`, 'error');
-            state.uiMode = 'SETUP';
-            window.currentMassageSession = null;
-            syncYear65UI();
-        }
+        const pending = { cancelled: false, command: { ...state.massage }, promise: null };
+        pendingMassageStart = pending;
+        pending.promise = (async () => {
+            try {
+                await refreshRobotHealth();
+                if (pending.cancelled) return;
+                const session = new TeachingMassageSession(pending.command);
+                await session.start();
+                if (pending.cancelled) {
+                    await session.stop('voice_stop_during_start');
+                    return;
+                }
+                voiceSetupSnapshot = null;
+                voiceSetupProgress = null;
+                clearVoiceSetupGuidance();
+                toggleStudentDrawer(false);
+                hideVoiceSetupBanner();
+            } catch (error) {
+                addSystemMessage(`Unable to start or stop massage: ${error.message || error}`, 'error');
+                if (!window.currentMassageSession) {
+                    state.uiMode = 'SETUP';
+                    if (isVoiceSetupActive()) {
+                        updateVoiceSetupPrompt();
+                        showVoiceSetupBanner();
+                    }
+                }
+                syncYear65UI();
+            } finally {
+                pendingMassageStart = null;
+            }
+        })();
+        return pending.promise;
     }
 
     async function pauseOrResumeSession() {
@@ -405,8 +513,16 @@
     }
 
     async function stopSession(reason = 'manual') {
+        clearVoiceSetupGuidance();
+        if (pendingMassageStart) {
+            pendingMassageStart.cancelled = true;
+            await pendingMassageStart.promise;
+            if (!window.currentMassageSession && isVoiceSetupActive()) cancelVoiceMassageSetup();
+            return;
+        }
         const session = window.currentMassageSession;
         if (!session) {
+            if (isVoiceSetupActive()) cancelVoiceMassageSetup();
             state.uiMode = 'SETUP';
             state.session.remainingSec = 0;
             state.session.totalSec = 0;
@@ -414,7 +530,11 @@
             syncYear65UI();
             return;
         }
-        await session.stop(reason);
+        try {
+            await session.stop(reason);
+        } catch (error) {
+            addSystemMessage(error.message || 'Stop failed', 'error');
+        }
     }
 
     function setMassageConfig(partialOrMode, intensity, durationMin) {
@@ -460,6 +580,7 @@
     }
 
     function cancelVoiceMassageSetup() {
+        clearVoiceSetupGuidance();
         const snapshot = voiceSetupSnapshot;
         voiceSetupSnapshot = null;
         voiceSetupProgress = null;
@@ -567,6 +688,10 @@
     }
 
     function bindSettingsControls() {
+        const robotIp = $('robotIpInput');
+        if (robotIp) robotIp.value = localStorage.getItem('robotIp') || window.SERVER_CONFIG?.robot_ip || robotIp.value;
+        $('robotConnectBtn')?.addEventListener('click', () => void changeRobotConnection(true));
+        $('robotDisconnectBtn')?.addEventListener('click', () => void changeRobotConnection(false));
         const panel = $('settingsPanel');
         const overlay = $('overlay');
         function setOpen(open) {
@@ -602,6 +727,7 @@
                 localStorage.setItem('voiceLanguage', language);
                 event.target.value = language;
                 updateAsrLanguageBadge();
+                warmVoiceSetupAudio();
                 if (window.sttService?.isActive?.()) {
                     window.sttService.setLanguage?.(getAsrLanguage());
                 }
@@ -680,18 +806,22 @@
 
     function parseSpokenNumber(value) {
         const raw = normalizeSpokenNumberToken(value);
-        const digits = raw.match(/\d+/);
+        const digits = raw.match(/^[+-]?\d+$/);
         if (digits) return Number(digits[0]);
 
         const english = {
-            one: 1, won: 1,
+            zero: 0, one: 1, won: 1,
             two: 2, to: 2, too: 2,
             three: 3, tree: 3, free: 3,
             four: 4, for: 4, fore: 4,
             five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-            fifteen: 15, twenty: 20, thirty: 30
+            eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+            sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90
         };
-        if (english[raw]) return english[raw];
+        if (Object.hasOwn(english, raw)) return english[raw];
+        const compound = raw.match(/^(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -](one|two|three|four|five|six|seven|eight|nine)$/);
+        if (compound) return english[compound[1]] + english[compound[2]];
+        if (/^[+-]?[\d.]+$/.test(raw)) return null;
 
         const zh = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
         const tenIndex = raw.indexOf('十');
@@ -726,17 +856,20 @@
         const rawText = String(transcript || '').trim();
         const text = normalizeAsrForMassageCommand(rawText);
         const lower = text.toLowerCase();
-        const haystack = lower + text + rawText;
+        const haystack = [lower, text, rawText].join(' ');
         const config = {};
+        const invalidConfigFields = [];
 
-        const modeNumberWords = '[1-4]|one|won|two|to|too|three|tree|free|four|for|fore';
-        const chineseModeNumbers = '[1-4一壹日逸乙二兩两倆俩易以耳三叁參参山衫杉生四肆是事市試试死]';
+        const modeNumberWords = '[+-]?\\d+|one|won|two|to|too|three|tree|free|four|for|fore';
+        const chineseModeNumbers = '[\\d一二兩两三四五六七八九十壹日逸乙倆俩易以耳叁參参山衫杉生肆是事市試试死]+';
         const modeMatch = lower.match(new RegExp('\\b(?:mode|mod|mood)\\s*(?:number\\s*)?(' + modeNumberWords + ')\\b'))
             || lower.match(new RegExp('\\b(?:option|number)\\s*(' + modeNumberWords + ')\\b'))
             || text.match(new RegExp('模式\\s*(' + chineseModeNumbers + ')'))
             || text.match(new RegExp('第?(' + chineseModeNumbers + ')個?模式'));
         if (modeMatch) {
-            config.mode = parseSpokenNumber(modeMatch[1]);
+            const mode = parseSpokenNumber(modeMatch[1]);
+            if (mode >= 1 && mode <= 4 && !/^\.\d/.test(text.slice(modeMatch.index + modeMatch[0].length))) config.mode = mode;
+            else invalidConfigFields.push('mode');
         } else if (/push\s*up|向上推|往上推|上推|推上/.test(haystack)) {
             config.mode = 1;
         } else if (/wave\s*push|波浪推|波浪|波朗推|玻浪推/.test(haystack)) {
@@ -755,13 +888,15 @@
             config.intensity = 'mid';
         }
 
-        const durationWords = 'one|won|two|to|too|three|tree|free|four|for|fore|five|six|seven|eight|nine|ten|fifteen|twenty|thirty';
+        const durationWords = '(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?|zero|one|won|two|to|too|three|tree|free|four|for|fore|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty';
         const chineseDurationNumbers = '一壹日逸乙二兩两倆俩易以耳三叁參参山衫杉生四肆是事市試试死五伍午唔吾六陸陆鹿綠绿路七柒出八捌百九玖久狗十拾實实';
-        const durationMatch = lower.match(new RegExp('\\b(?:for\\s+)?(\\d+|' + durationWords + ')\\s*(minutes?|mins?|min)\\b'))
+        const durationMatch = lower.match(new RegExp('(?:^|\\s)(?:for\\s+)?([+-]?\\d+(?:\\.\\d+)?|' + durationWords + ')\\s*(minutes?|mins?|min)\\b'))
+            || lower.match(new RegExp('\\b(?:duration|time)\\s+([+-]?\\d+(?:\\.\\d+)?|' + durationWords + ')\\b'))
             || text.match(new RegExp('([' + chineseDurationNumbers + '\\d]+)\\s*(分鐘|分鍾|分钟|分中|分種|分种|分眾|分众|分)'));
         if (durationMatch) {
             const duration = parseSpokenNumber(durationMatch[1]);
-            if (duration) config.durationMin = duration;
+            if (duration >= 1 && duration <= 30 && !/[.\d-]$/.test(text.slice(0, durationMatch.index))) config.durationMin = duration;
+            else invalidConfigFields.push('duration');
         }
 
         const hasConfig = Object.keys(config).length > 0;
@@ -771,7 +906,10 @@
             hasStartIntent = false;
         }
 
-        return { config, hasConfig, hasStartIntent };
+        if (!/\b(?:start|begin)\b|開始|啟動|启动/.test(lower)
+            && !/^(?:confirm|yes|go|確認|确认)[.!?。！？]*$/i.test(text.trim())) hasStartIntent = false;
+        if (/\b(?:don['’]?t|do not|not|never)\s+(?:start|begin|confirm|go)\b|不要開始|唔好開始|不要开始/.test(lower)) hasStartIntent = false;
+        return { config, hasConfig, hasStartIntent, invalidConfigFields };
     }
 
     function ensureAudioManager() {
@@ -783,6 +921,14 @@
             }
         }
         return window.audioManager || null;
+    }
+
+    function warmVoiceSetupAudio() {
+        const manager = ensureAudioManager();
+        // Warm the actual player in parallel with recognition startup.
+        Promise.resolve(manager?.prepareAsset?.('system.choose_mode')).catch(error => {
+            console.warn('[stable-app] voice setup audio warmup failed:', error);
+        });
     }
 
     function summarizeVoiceConfig(config) {
@@ -828,6 +974,16 @@
         }[field] || null;
     }
 
+    function clearVoiceSetupGuidance() {
+        voiceSetupGuidanceToken++;
+        lastVoiceSetupGuidance = { assetId: '', at: 0 };
+        window.__setupPromptPlaying = false;
+        window.__setupAsrAcceptAfter = 0;
+        if (window.audioManager?.getStatus?.().current?.assetId?.startsWith('system.')) {
+            window.audioManager.stop?.('voice_setup_finished');
+        }
+    }
+
     function playVoiceSetupGuidance(field) {
         const assetId = getVoiceSetupGuidanceAsset(field);
         const manager = ensureAudioManager();
@@ -839,7 +995,9 @@
         const token = ++voiceSetupGuidanceToken;
         window.__lastVoiceSetupGuidanceAsset = assetId;
         window.__setupPromptPlaying = true;
-        window.__setupAsrAcceptAfter = Math.max(window.__setupAsrAcceptAfter || 0, eventTime + 1800);
+        // Playback completion, rather than a fixed 1.8-second floor, determines
+        // when the brief echo guard ends.
+        window.__setupAsrAcceptAfter = 0;
 
         Promise.resolve(manager.playAsset(assetId, {
             priority: window.AudioPriority?.P1 ?? 1,
@@ -850,7 +1008,7 @@
             console.warn('[stable-app] voice setup guidance failed:', assetId, error);
         }).finally(() => {
             if (token !== voiceSetupGuidanceToken) return;
-            window.__setupAsrAcceptAfter = Math.max(window.__setupAsrAcceptAfter || 0, Date.now() + 250);
+            window.__setupAsrAcceptAfter = Date.now() + 250;
             window.setTimeout(() => {
                 if (token !== voiceSetupGuidanceToken) return;
                 if (Date.now() >= (window.__setupAsrAcceptAfter || 0)) {
@@ -879,7 +1037,7 @@
     function parseVoiceSetupStepConfig(transcript, parsedConfig = {}) {
         if (!isVoiceSetupActive()) return {};
         const next = getVoiceSetupMissingFields()[0];
-        const rawText = String(transcript || '').trim();
+        const rawText = String(transcript || '').trim().replace(/[.!?。！？,，]+$/g, '').trim();
         const text = normalizeAsrForMassageCommand(rawText);
         const lower = text.toLowerCase();
         const compactChinese = text.replace(/[^\u3400-\u9fff\d]/g, '');
@@ -903,10 +1061,12 @@
         }
 
         if (next === 'durationMin' && !parsedConfig.durationMin) {
-            const bareDurationMatch = lower.match(/^\s*([1-9]|one|won|two|to|too|three|tree|free|four|for|fore|five|six|seven|eight|nine|ten)\s*$/)
-                || text.match(/^\s*([1-9一壹日逸乙二兩两倆俩易以耳三叁參参山衫杉生四肆是事市試试死五伍午唔吾六陸陆鹿綠绿路七柒出八捌百九玖久狗十拾實实])\s*$/);
-            const duration = bareDurationMatch ? parseSpokenNumber(bareDurationMatch[1]) : null;
-            if (duration >= 1 && duration <= 30) config.durationMin = duration;
+            const token = lower.replace(/^(?:duration|time)\s*/, '');
+            if (/^\d+$|^(?:one|won|two|to|too|three|tree|free|four|for|fore|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?|thirty)$/.test(token)
+                || /^[\d一二兩两三四五六七八九十拾實实]+$/.test(token)) {
+                const duration = parseSpokenNumber(token);
+                if (duration >= 1 && duration <= 30) config.durationMin = duration;
+            }
         }
 
         return config;
@@ -937,10 +1097,10 @@
         return combined;
     }
 
-    function shouldEnterVoiceMassageSetup(transcript) {
+    function shouldEnterVoiceMassageSetup(transcript, { allowPartial = false } = {}) {
         const raw = String(transcript || '').trim();
         window.__lastAsrTranscript = raw;
-        if (window.currentMassageSession) {
+        if (window.currentMassageSession || pendingMassageStart) {
             window.__lastAsrWakeDecision = { raw, matched: false, reason: 'session-running' };
             return false;
         }
@@ -948,13 +1108,13 @@
             window.__lastAsrWakeDecision = { raw, matched: false, reason: 'setup-already-active' };
             return false;
         }
-        if (isMassageSetupWakePhrase(raw)) {
+        if (isMassageSetupWakePhrase(raw, allowPartial)) {
             window.__lastAsrWakeDecision = { raw, matched: true, reason: 'direct' };
             resetAsrWakePhraseFragments();
             return true;
         }
         const combined = rememberAsrWakePhraseFragment(raw);
-        if (combined && combined !== raw && isMassageSetupWakePhrase(combined)) {
+        if (combined && combined !== raw && isMassageSetupWakePhrase(combined, allowPartial)) {
             window.__lastAsrWakeDecision = { raw, combined, matched: true, reason: 'buffer' };
             resetAsrWakePhraseFragments();
             return true;
@@ -964,6 +1124,7 @@
     }
 
     function enterVoiceMassageSetup() {
+        const receivedAt = window.__lastAsrResultAt || Date.now();
         resetAsrWakePhraseFragments();
         resetVoiceSetupProgress();
         captureVoiceSetupSnapshot();
@@ -974,6 +1135,12 @@
         updateVoiceSetupPrompt('', { playGuidance: true });
         showVoiceSetupBanner();
         announce('ASR massage setup ready');
+        window.__asrWakeTiming = {
+            provider: window.sttService?.getCurrentProvider?.(),
+            transcript: window.__lastAsrTranscript,
+            receivedAt, drawerOpenedAt: Date.now(),
+            dispatchMs: Date.now() - receivedAt
+        };
     }
 
     function normalizeAsrForWakePhrase(transcript) {
@@ -1030,12 +1197,18 @@
             && /\b(setting|settings|setup|set\s*up|sitting|seating|getting)\b/.test(normalized);
     }
 
-    function isMassageSetupWakePhrase(transcript) {
+    function isMassageSetupWakePhrase(transcript, allowPartial = false) {
         const normalized = normalizeAsrForWakePhrase(transcript);
         const compact = normalized.replace(/[\s.,!?;:'"()[\]{}\-_/\\|，。！？、；：「」『』（）【】《》]+/g, '');
         const englishCompact = compact.replace(/[^a-z]/g, '');
         const chineseCompact = compact.replace(/[^\u3400-\u9fff]/g, '');
-        return hasFuzzyEnglishMassageSetting(englishCompact, normalized)
+        // Providers may hold the last word until finalization. An unambiguous
+        // partial prefix can open setup early; changing settings still needs finals.
+        const partialWake = allowPartial && (
+            /massageset(?:t|ti|tin)?$/.test(englishCompact)
+            || /按摩[設设]$/.test(chineseCompact)
+        );
+        return partialWake || hasFuzzyEnglishMassageSetting(englishCompact, normalized)
             || [
                 '按摩設定',
                 '設定按摩',
@@ -1058,13 +1231,17 @@
 
     function applyVoiceMassageSetup(transcript) {
         const parsed = parseVoiceMassageConfig(transcript);
+        if (parsed.invalidConfigFields.length) {
+            announce('Invalid massage setting. Choose mode 1–4 and duration 1–30 minutes.');
+            return true;
+        }
         const activeSetup = isVoiceSetupActive();
         const stepConfig = activeSetup ? parseVoiceSetupStepConfig(transcript, parsed.config) : {};
         const config = { ...parsed.config, ...stepConfig };
         const hasConfig = Object.keys(config).length > 0;
         if (!hasConfig && !parsed.hasStartIntent) return false;
 
-        if (window.currentMassageSession && hasConfig) {
+        if ((window.currentMassageSession || pendingMassageStart) && hasConfig) {
             addSystemMessage('End the current massage session before changing massage settings.', 'warning');
             return true;
         }
@@ -1090,9 +1267,6 @@
                 announce('Please finish mode, intensity, and duration before starting.');
                 return true;
             }
-            voiceSetupSnapshot = null;
-            voiceSetupProgress = null;
-            hideVoiceSetupBanner();
             void startMassage();
         }
         return true;
@@ -1106,6 +1280,7 @@
 
         if (shouldEnterVoiceMassageSetup(normalized)) {
             enterVoiceMassageSetup();
+            applyVoiceMassageSetup(normalized);
             return;
         }
 
@@ -1114,17 +1289,20 @@
             return;
         }
 
-        if (/pause|hold|soft stop|暫停|停一停/.test(lower)) {
-            void pauseOrResumeSession();
+        if (/\b(?:pause|hold|soft stop)\b|暫停|停一停/.test(lower)) {
+            const session = window.currentMassageSession;
+            if (session && !session.isPaused) {
+                void session.pause().catch(error => addSystemMessage(error.message, 'error'));
+            }
             return;
         }
         if (/end session|endsession|finish|quit|stop massage|\bstop\b|停止療程|停止按摩|停止|結束|完結|停機/.test(lower)) {
             void stopSession('voice_endsession');
             return;
         }
-        if (/resume|continue|繼續/.test(lower)) {
+        if (/\b(?:resume|continue)\b|繼續/.test(lower)) {
             const session = window.currentMassageSession;
-            if (session?.isPaused) void session.resume();
+            if (session?.isPaused) void session.resume().catch(error => addSystemMessage(error.message, 'error'));
             return;
         }
         if (applyVoiceMassageSetup(normalized)) {
@@ -1138,10 +1316,23 @@
             return false;
         }
         if (window.sttService.isActive?.()) return true;
+        warmVoiceSetupAudio();
         try {
             await window.sttService.start(getAsrLanguage());
             if (!window.sttService.isActive?.()) {
                 throw new Error('No STT provider could start listening');
+            }
+            if (window.sttService.needsUserGesture?.()) {
+                addSystemMessage('Voice input is ready after one click: click anywhere on the page, then speak.', 'warning');
+                const enableOnGesture = () => {
+                    if (!window.sttService?.needsUserGesture?.()) {
+                        window.removeEventListener('pointerdown', enableOnGesture);
+                        window.removeEventListener('keydown', enableOnGesture);
+                        addSystemMessage('Voice input enabled. Speak now.', 'info');
+                    }
+                };
+                window.addEventListener('pointerdown', enableOnGesture);
+                window.addEventListener('keydown', enableOnGesture);
             }
             return true;
         } catch (error) {
@@ -1180,12 +1371,24 @@
         if (!window.sttService || window.__stableSttBound) return;
         window.__stableSttBound = true;
         sttUnsubscribers = [
-            window.sttService.onResult?.((event) => handleTranscript(event.text || event.transcript || '')),
+            window.sttService.onResult?.((event) => {
+                window.__lastAsrResultAt = Date.now();
+                const text = event.text || event.transcript || '';
+                // Guidance contains command examples; never execute its own echo.
+                if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(text.trim())) return;
+                handleTranscript(text);
+            }),
             window.sttService.onPartial?.((event) => {
+                window.__lastAsrResultAt = Date.now();
                 const text = event.text || event.transcript || '';
                 const debug = $('asrDebugText');
                 if (debug && text) debug.textContent = text;
-                if (shouldEnterVoiceMassageSetup(text)) {
+                if (/^(?:stop(?: massage)?|end session|停止(?:按摩|療程)?|停機)[.!?。！？]*$/i.test(text.trim())) {
+                    void stopSession('voice_endsession');
+                    return;
+                }
+                if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(text.trim())) return;
+                if (shouldEnterVoiceMassageSetup(text, { allowPartial: true })) {
                     enterVoiceMassageSetup();
                     return;
                 }
@@ -1267,6 +1470,7 @@
         }
 
         ensureAudioManager();
+        warmVoiceSetupAudio();
         initTeachingModules();
         bindStudentControls();
         bindInstructorControls();

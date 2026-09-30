@@ -104,6 +104,15 @@ export function getWakeWordDetector() {
         return t;
     }
 
+    // BCP-47 speech-recognition locale for the stored UI/voice language.
+    // 'en' (or anything starting with 'en') -> 'en-US', everything else -> 'zh-HK'
+    // (Cantonese default). Matches the mapping in app.js getAsrLanguage().
+    export function getASRLanguage(lang) {
+        const v = String(lang || '').trim().toLowerCase();
+        if (v.startsWith('en')) return 'en-US';
+        return 'zh-HK';
+    }
+
     let setupRecognition = null;
 
     function _createSetupRecognition() {

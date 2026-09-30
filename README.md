@@ -56,6 +56,22 @@ Default local URL:
 http://127.0.0.1:5033/
 ```
 
+## UR10e Robot Program
+
+Load `robot/ur10e_demo_smooth_27.urs` into the pendant program with the RG2
+URCap helpers available. After updating this file, reload it on the pendant;
+restarting the backend does not update the robot's loaded script.
+This is the repository's only `.urs` program. The backend requests actions via
+RTDE registers and does not load script files from the repository automatically.
+
+Mode 4 saves the starting TCP pose once per start command. Every station and
+return lift uses that same TCP reference frame, and each completed batch returns
+to the exact starting pose without endpoint blending. Physical lift is TCP -Z
+for the downward-facing tool used by this demo. Confirm the selected TCP matches
+the installed tool before positioning the starting pose.
+
+The demo currently maps commands 1–4 to the mode-4 movement sequence.
+
 ## Stop
 
 ```bash
@@ -67,4 +83,8 @@ http://127.0.0.1:5033/
 ```bash
 npm test
 npm run test:e2e
+venv/bin/python -m unittest discover -s tests -p 'test_robot_reference_frame.py' -v
 ```
+
+The robot reference-frame tests execute the script's motion logic with simulated
+poses; they do not validate controller dynamics or physical robot movement.

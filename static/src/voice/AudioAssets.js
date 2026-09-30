@@ -638,32 +638,11 @@ export class AudioAssetLibrary {
 
         try {
             const url = _fileUrl(directory, filename);
-            let estimatedSize = 0;
-
-            // Best-effort HEAD for size; do not block playback if it fails.
-            try {
-                const response = await fetch(url, {
-                    method: 'HEAD',
-                    cache: 'force-cache'
-                });
-                if (response.ok) {
-                    const contentLength = response.headers.get('content-length');
-                    estimatedSize = contentLength ? parseInt(contentLength) : 0;
-                } else if (window.DEBUG_LOGS) {
-                    console.warn(`[AudioAssetLibrary] HEAD failed (${response.status}) for ${assetId}`);
-                }
-            } catch (e) {
-                if (window.DEBUG_LOGS) {
-                    console.warn(`[AudioAssetLibrary] HEAD request failed for ${assetId}:`, e);
-                }
-            }
+            // Size is estimated from decoded metadata below. A HEAD request
+            // adds a network round trip before preloading can even begin.
 
             if (window.DEBUG_LOGS) {
-                if (estimatedSize > 0) {
-                    console.log(`[AudioAssetLibrary] Loading asset: ${assetId} (${lang}) - ${Math.round(estimatedSize / 1024)}KB`);
-                } else {
-                    console.log(`[AudioAssetLibrary] Loading asset: ${assetId} (${lang})`);
-                }
+                console.log(`[AudioAssetLibrary] Loading asset: ${assetId} (${lang})`);
             }
 
             // Create audio element to preload
@@ -694,7 +673,7 @@ export class AudioAssetLibrary {
                         assetId,
                         lang,
                         category,
-                        size: this.estimateAudioSize(audio) || estimatedSize,
+                        size: this.estimateAudioSize(audio),
                         duration: audio.duration || 0,
                         format: filename.split('.').pop().toLowerCase()
                     };
@@ -846,7 +825,8 @@ export class AudioAssetLibrary {
             timeout = 8000,
             fallback = true,
             language = null,
-            lang: requestedLang = null
+            lang: requestedLang = null,
+            forPlayback = false
         } = options;
 
         const lang = _getCurrentAudioLanguage(requestedLang || language);
@@ -866,6 +846,19 @@ export class AudioAssetLibrary {
         }
 
         instance.stats.cacheMisses++;
+
+        // The playback element can stream immediately. Do not wait for a
+        // separate preloader (or its 8-second timeout) before starting playback.
+        if (forPlayback) {
+            const filename = instance.fileMappings[lang]?.[category]?.[assetId];
+            const directory = category === 'system'
+                ? instance.languageMappings[lang]?.systemDir
+                : instance.languageMappings[lang]?.patientDir;
+            if (filename && directory) {
+                return { url: _fileUrl(directory, filename), assetId, lang, category,
+                    audio: null, size: 0, duration: 0, format: filename.split('.').pop() };
+            }
+        }
 
         // Load asset if not cached
         try {
