@@ -88,6 +88,13 @@ Current demo behavior:
 - An unconfirmed robot Stop leaves the UI session active for retry. Automatic
   reconnection sends Stop and resynchronizes command sequences; it does not
   resume massage automatically.
+- Spoken Stop is handled on interim recognition, including "please stop". It
+  interrupts pending Start requests and bypasses ordinary backend operations.
+  The host script polls Stop/Pause every 20 ms while arm or gripper actions run,
+  cancels their worker, stops the arm, and requests gripper release for Stop.
+  Recognition, network transport, and physical deceleration still take time.
+  After updating, restart the backend, reload the browser, and replace the
+  pendant's script with `robot/ur10e_demo_smooth_27.urs` before pressing Play.
 
 ## Stop
 
