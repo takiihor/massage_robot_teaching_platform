@@ -6,14 +6,14 @@
 # ---------------------------
 # RTDE Register Map
 # ---------------------------
-IN_CMD = 18   # 0=Stop, 1..4=Mode, 5=Pause, 6=Resume
+IN_CMD = 18   # 0=Stop, 1..4=Mode, 5=Pause, 6=Resume, 7/8=home XYZ/rotation
 IN_SPEED_X100 = 19   # optional speed scaling (not mandatory)
 IN_FORCE_X10 = 20   # target contact force in N*10 (e.g. 25=2.5N, 50=5N, 80=8N)
 IN_DURATION_S = 21   # duration in seconds
 IN_CMD_SEQ = 22
  # IN_FORCE_ENABLE register not used here (RTDE IO supports only 18-22)
 
-OUT_STATE = 12 # 0=IDLE, 1=RUNNING, 2=PAUSED
+OUT_STATE = 12 # 0=IDLE, 1=RUNNING, 2=PAUSED, 3=RETURNING_HOME
 OUT_ERROR_CODE = 13 # 0=OK, 1=Unknown cmd, 2=Overforce stop
 OUT_CURRENT_MODE = 14
 OUT_PROGRESS = 15
@@ -23,6 +23,14 @@ OUT_CAL_STATUS = 17
 STATE_IDLE = 0
 STATE_RUNNING = 1
 STATE_PAUSED = 2
+STATE_RETURNING_HOME = 3
+
+# Upload home in two acknowledged halves using supported double inputs.
+IN_HOME_0 = 18
+IN_HOME_1 = 19
+IN_HOME_2 = 20
+CMD_HOME_XYZ = 7
+CMD_HOME_ROTATION = 8
 
 ERR_OK = 0
 ERR_UNKNOWN_CMD = 1
@@ -40,7 +48,7 @@ DT = 0.05   # logical time step for movement math (movel is blocking anyway)
 # ---------------------------
 # RG2 parameters (mode 4)
 # ---------------------------
-RG2_CLOSE_WIDTH = 40
+RG2_CLOSE_WIDTH = 20
 RG2_CLOSE_FORCE = 10.0
 RG2_OPEN_WIDTH = 80
 RG2_OPEN_FORCE = 10.0
@@ -50,7 +58,6 @@ MODE4_REPEAT_COUNT = 4
 RG2_GRIPPER_CYCLES = 1
 MOVE_STEPS_UP = 1
 MOVE_STEPS_YZ = 1
-MOVE_STEPS_RETURN = 8
 
 # ---------------------------
 # Force control parameters
@@ -69,12 +76,21 @@ blocking_action_done = False
 blocking_action_kind = 0
 blocking_action_pose = p[0, 0, 0, 0, 0, 0]
 blocking_action_blend = 0
+blocking_return_lift = p[0, 0, 0, 0, 0, 0]
+blocking_return_travel = p[0, 0, 0, 0, 0, 0]
+blocking_return_end = p[0, 0, 0, 0, 0, 0]
 blocking_action_width = 0
 blocking_action_force = 0
 
 thread blocking_action_worker():
   if blocking_action_kind == 1:
     movel(blocking_action_pose, a = A_SLOW, v = V_SLOW, r = blocking_action_blend)
+  elif blocking_action_kind == 3:
+    # Keep all three moves in one thread so the planner can blend the corners.
+    # No polling sleeps, joins, or thread restarts between these moves.
+    movel(blocking_return_lift, a = A_SLOW, v = V_SLOW, r = R_BLEND)
+    movel(blocking_return_travel, a = A_SLOW, v = V_SLOW, r = R_BLEND)
+    movel(blocking_return_end, a = A_SLOW, v = V_SLOW, r = 0)
   else:
     rg_grip(blocking_action_width, blocking_action_force, tool_index = 0, blocking = True, depth_comp = False, popupmsg = False)
   end
@@ -151,26 +167,70 @@ def rg2_cycles():
   end
 end
 
+def request_stop():
+  cancel_blocking_action()
+  end_force_safe()
+  stop_motion()
+  rg2_open_only()
+  global active_mode = 0
+  global paused_mode = 0
+  # duration=-1 is a connection/arming STOP: never initiate travel.
+  global return_home_pending = read_input_integer_register(IN_DURATION_S) != -1
+  if return_home_pending:
+    set_outputs(STATE_RETURNING_HOME, 0, 0, last_seq, ERR_OK)
+  else:
+    set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
+  end
+end
+
+def return_home():
+  # Open fully before moving. Release and travel remain interruptible.
+  if grip_interruptible(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, 0):
+    return None
+  end
+  # Reach the home clearance plane along the saved tool's physical-up axis.
+  # Repeated STOPs or a STOP during a lift must not add another 50mm each time.
+  home_lifted = pose_trans(home_pose, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
+  cur = get_actual_tcp_pose()
+  ux = (home_lifted[0] - home_pose[0]) / RG2_STEP_UP_M
+  uy = (home_lifted[1] - home_pose[1]) / RG2_STEP_UP_M
+  uz = (home_lifted[2] - home_pose[2]) / RG2_STEP_UP_M
+  height = (cur[0] - home_pose[0]) * ux + (cur[1] - home_pose[1]) * uy + (cur[2] - home_pose[2]) * uz
+  lift_m = RG2_STEP_UP_M - height
+  if lift_m > 0:
+    lifted = p[cur[0] + ux * lift_m, cur[1] + uy * lift_m, cur[2] + uz * lift_m, cur[3], cur[4], cur[5]]
+    if movel_interruptible(lifted, 0, 0):
+      return None
+    end
+  end
+  if movel_interruptible(home_lifted, 0, 0):
+    return None
+  end
+  if movel_interruptible(home_pose, 0, 0):
+    return None
+  end
+  global return_home_pending = False
+  set_outputs(STATE_IDLE, 0, 100, last_seq, ERR_OK)
+end
+
 def check_stop_or_pause(prog):
   live_cmd = read_input_integer_register(IN_CMD)
   live_seq = read_input_integer_register(IN_CMD_SEQ)
   if live_seq != last_seq:
+    if return_home_pending and (live_cmd != 0) and (live_cmd != 5):
+      return 0
+    end
     global last_seq = live_seq
     if live_cmd == 0:
       # STOP
-      cancel_blocking_action()
-      end_force_safe()
-      stop_motion()
-      rg2_open_only()
-      global active_mode = 0
-      global paused_mode = 0
-      set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
+      request_stop()
       return 1
     elif live_cmd == 5:
       # PAUSE
       cancel_blocking_action()
       end_force_safe()
       stop_motion()
+      global return_home_pending = False
       global paused_mode = active_mode
       global active_mode = 0
       set_outputs(STATE_PAUSED, paused_mode, prog, last_seq, ERR_OK)
@@ -202,6 +262,17 @@ def movel_interruptible(target_pose, blend, prog):
   global blocking_action_kind = 1
   global blocking_action_pose = target_pose
   global blocking_action_blend = blend
+  return wait_for_blocking_action(prog)
+end
+
+def batch_return_interruptible(frame, station_y, prog):
+  if check_stop_or_pause(prog) > 0:
+    return True
+  end
+  global blocking_return_lift = pose_trans(frame, p[0, station_y, -RG2_STEP_UP_M, 0, 0, 0])
+  global blocking_return_travel = pose_trans(frame, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
+  global blocking_return_end = frame
+  global blocking_action_kind = 3
   return wait_for_blocking_action(prog)
 end
 
@@ -294,6 +365,10 @@ paused_mode = 0
 last_seq = -1
 last_force_x10 = 0
 system_armed = False
+return_home_pending = False
+# Backend replaces this standalone fallback with its startup pose.
+home_pose = get_actual_tcp_pose()
+home_xyz = p[0, 0, 0, 0, 0, 0]
 
 # Safety bootstrapping:
 # - Latch current seq at startup so stale pre-existing cmd/seq is not replayed.
@@ -313,17 +388,18 @@ while True:
     last_seq = seq
     end_force_safe()
 
-    if not system_armed:
+    if cmd == CMD_HOME_XYZ:
+      home_xyz = p[read_input_float_register(IN_HOME_0), read_input_float_register(IN_HOME_1), read_input_float_register(IN_HOME_2), 0, 0, 0]
+      set_outputs(STATE_IDLE, CMD_HOME_XYZ, 0, last_seq, ERR_OK)
+    elif cmd == CMD_HOME_ROTATION:
+      home_pose = p[home_xyz[0], home_xyz[1], home_xyz[2], read_input_float_register(IN_HOME_0), read_input_float_register(IN_HOME_1), read_input_float_register(IN_HOME_2)]
+      set_outputs(STATE_IDLE, CMD_HOME_ROTATION, 0, last_seq, ERR_OK)
+    elif not system_armed:
       # Ignore all non-stop commands until we receive an explicit STOP edge.
       # This blocks stale motion commands after backend/URScript restarts.
       if cmd == 0:
         system_armed = True
-        end_force_safe()
-        stop_motion()
-        rg2_open_only()
-        active_mode = 0
-        paused_mode = 0
-        set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
+        request_stop()
       else:
         active_mode = 0
         paused_mode = 0
@@ -332,12 +408,7 @@ while True:
     else:
       if cmd == 0:
         # STOP: abort everything, clear any paused state
-        end_force_safe()
-        stop_motion()
-        rg2_open_only()
-        active_mode = 0
-        paused_mode = 0
-        set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
+        request_stop()
 
       elif (cmd >= 1) and (cmd <= 4):
         # START / RESUME-AS-NEW: start massage (all modes map to mode 4)
@@ -349,6 +420,7 @@ while True:
         # PAUSE: stop motion, save active mode so Resume can restore it
         end_force_safe()
         stop_motion()
+        return_home_pending = False
         if active_mode > 0:
           paused_mode = active_mode
         end
@@ -376,7 +448,9 @@ while True:
   # ----------------------------------------------------------
   # Run active mode (movel based, with Z-only force_mode)
   # ----------------------------------------------------------
-  if active_mode > 0:
+  if return_home_pending:
+    return_home()
+  elif active_mode > 0:
 
     # capture center pose once (like mode1_to4)
     start_pose = get_actual_tcp_pose()
@@ -476,22 +550,12 @@ while True:
         end_force_safe()
 
         if completed_normally:
-          # Lift and travel in the SAME saved TCP frame as the forward path.
-          # Subtracting from start_pose[2] would instead move along BASE Z.
-          if move_in_frame_interruptible(start_pose, 0, elapsed * RG2_STEP_Y_M, -RG2_STEP_UP_M, MOVE_STEPS_UP, prog):
+          # One continuous lift/travel/descent path in the saved TCP frame.
+          # Only the final contact pose is a stop point before the next clamp.
+          if batch_return_interruptible(start_pose, elapsed * RG2_STEP_Y_M, prog):
             completed_normally = False
           else:
-            start_lift_pose = pose_trans(start_pose, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
-            if move_to_pose_interruptible(start_lift_pose, MOVE_STEPS_RETURN, prog):
-              completed_normally = False
-            else:
-              # Finish at the saved absolute pose, with no blend at the endpoint.
-              if move_to_pose_interruptible(start_pose, MOVE_STEPS_UP, prog):
-                completed_normally = False
-              else:
-                sync()
-              end
-            end
+            sync()
           end
         end
 
