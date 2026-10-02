@@ -62,6 +62,32 @@ FORCE_Z_DEV = 0.10      # meters, allowed Z deviation in force_mode (0.10m = +/-
 # ============================================================
 # Helpers
 # ============================================================
+# Blocking arm/gripper calls run in one worker so the command loop can keep
+# polling STOP/PAUSE. Kill the worker before taking control with stopj().
+blocking_action_handle = 0
+blocking_action_done = False
+blocking_action_kind = 0
+blocking_action_pose = p[0, 0, 0, 0, 0, 0]
+blocking_action_blend = 0
+blocking_action_width = 0
+blocking_action_force = 0
+
+thread blocking_action_worker():
+  if blocking_action_kind == 1:
+    movel(blocking_action_pose, a = A_SLOW, v = V_SLOW, r = blocking_action_blend)
+  else:
+    rg_grip(blocking_action_width, blocking_action_force, tool_index = 0, blocking = True, depth_comp = False, popupmsg = False)
+  end
+  global blocking_action_done = True
+end
+
+def cancel_blocking_action():
+  if blocking_action_handle != 0:
+    kill blocking_action_handle
+    global blocking_action_handle = 0
+  end
+end
+
 def set_outputs(state, mode, prog, ack, err):
   write_output_integer_register(OUT_STATE, state)
   write_output_integer_register(OUT_CURRENT_MODE, mode)
@@ -112,7 +138,8 @@ def rg2_close_open():
 end
 
 def rg2_open_only():
-  rg_grip(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, tool_index = 0, blocking = True, depth_comp = False, popupmsg = False)
+  # Release after stopping without delaying the STOP acknowledgement for travel.
+  rg_grip(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, tool_index = 0, blocking = False, depth_comp = False, popupmsg = False)
 end
 
 def rg2_cycles():
@@ -131,6 +158,7 @@ def check_stop_or_pause(prog):
     global last_seq = live_seq
     if live_cmd == 0:
       # STOP
+      cancel_blocking_action()
       end_force_safe()
       stop_motion()
       rg2_open_only()
@@ -140,6 +168,7 @@ def check_stop_or_pause(prog):
       return 1
     elif live_cmd == 5:
       # PAUSE
+      cancel_blocking_action()
       end_force_safe()
       stop_motion()
       global paused_mode = active_mode
@@ -149,6 +178,41 @@ def check_stop_or_pause(prog):
     end
   end
   return 0
+end
+
+def wait_for_blocking_action(prog):
+  global blocking_action_done = False
+  global blocking_action_handle = run blocking_action_worker()
+  while not blocking_action_done:
+    if check_stop_or_pause(prog) > 0:
+      return True
+    end
+    sleep(0.02)
+  end
+  join blocking_action_handle
+  global blocking_action_handle = 0
+  # Catch a command that arrived as the worker completed.
+  return check_stop_or_pause(prog) > 0
+end
+
+def movel_interruptible(target_pose, blend, prog):
+  if check_stop_or_pause(prog) > 0:
+    return True
+  end
+  global blocking_action_kind = 1
+  global blocking_action_pose = target_pose
+  global blocking_action_blend = blend
+  return wait_for_blocking_action(prog)
+end
+
+def grip_interruptible(width, force, prog):
+  if check_stop_or_pause(prog) > 0:
+    return True
+  end
+  global blocking_action_kind = 2
+  global blocking_action_width = width
+  global blocking_action_force = force
+  return wait_for_blocking_action(prog)
 end
 
 def wait_interruptible(wait_s, prog):
@@ -168,12 +232,10 @@ def rg2_close_open_interruptible(prog):
     return True
   end
   # Blocking gripper action ensures we don't move before close/open is complete.
-  rg_grip(RG2_CLOSE_WIDTH, RG2_CLOSE_FORCE, tool_index = 0, blocking = True, depth_comp = False, popupmsg = False)
-  if check_stop_or_pause(prog) > 0:
+  if grip_interruptible(RG2_CLOSE_WIDTH, RG2_CLOSE_FORCE, prog):
     return True
   end
-  rg_grip(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, tool_index = 0, blocking = True, depth_comp = False, popupmsg = False)
-  if check_stop_or_pause(prog) > 0:
+  if grip_interruptible(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, prog):
     return True
   end
   return False
@@ -208,7 +270,9 @@ def move_to_pose_interruptible(target_pose, steps, prog):
     if i == steps - 1:
       blend = 0
     end
-    movel(waypoint, a = A_SLOW, v = V_SLOW, r = blend)
+    if movel_interruptible(waypoint, blend, prog):
+      return True
+    end
     i = i + 1
   end
   return False
@@ -529,7 +593,10 @@ while True:
         ]
 
         # Smoothness: use blend radius so the TCP doesn't decel-to-zero at every waypoint
-        movel(target, a = A_SLOW, v = V_SLOW, r = R_BLEND)
+        if movel_interruptible(target, R_BLEND, prog):
+          completed_normally = False
+          break
+        end
         sync()
 
         # Post-move safety check too (catch transient spike)
@@ -555,7 +622,9 @@ while True:
 
       # Return to start pose (A) after a normal completion so next task starts at A
       if completed_normally:
-        movel(start_pose, a = A_SLOW, v = V_SLOW, r = 0)
+        if movel_interruptible(start_pose, 0, prog):
+          completed_normally = False
+        end
         sync()
       end
     end

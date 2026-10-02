@@ -210,6 +210,7 @@ class UR10eMiddlewareLocalMode:
         self._speed_slider = 1.0
         self._force_enable_supported = True
         self._send_mode_lock = threading.Lock()
+        self._stop_generation = 0
 
         self._stop_evt = threading.Event()
         self._telemetry_thread: Optional[threading.Thread] = None
@@ -895,6 +896,7 @@ class UR10eMiddlewareLocalMode:
         force_enable: bool = False,
         wait_ack: bool = True,
         ack_timeout_s: float = 2.0,
+        expected_stop_generation: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Send a mode request via RTDE registers.
@@ -913,11 +915,14 @@ class UR10eMiddlewareLocalMode:
             logger.error("send_mode: rtde_io not connected!")
             return {"ok": False, "error": "rtde_io not connected"}
         requested_mode = int(mode)
+        generation = self._stop_generation if expected_stop_generation is None else expected_stop_generation
         force_mode4_only = os.getenv("UR10E_FORCE_MODE4_ONLY", "0").lower() in ("1", "true", "yes", "on")
         effective_mode = 4 if force_mode4_only and requested_mode in (1, 2, 3, 4) else requested_mode
         if effective_mode != requested_mode:
             logger.info("send_mode: UR10E_FORCE_MODE4_ONLY remapped requested mode %d -> %d", requested_mode, effective_mode)
         with self._send_mode_lock:
+            if generation != self._stop_generation:
+                return {"ok": False, "error": "Command cancelled by Stop"}
             self._ensure_speed_slider_for_motion(effective_mode)
             seq = self._next_seq()
             logger.info("send_mode: generated seq=%d", seq)
@@ -938,47 +943,50 @@ class UR10eMiddlewareLocalMode:
                 logger.exception("send_mode: Failed to write registers")
                 return {"ok": False, "error": f"failed to write registers: {e}"}
 
-            if not wait_ack:
-                return {"ok": True, "seq": seq, "note": "sent (no ack wait)"}
+        # Only register writes are serialized. Waiting here must never hold up STOP.
+        if not wait_ack:
+            return {"ok": True, "seq": seq, "note": "sent (no ack wait)"}
 
-            # Wait for URScript to echo ack seq
-            logger.info("send_mode: Waiting for ACK (timeout=%ss)...", ack_timeout_s)
-            t_end = time.time() + float(ack_timeout_s)
-            last_ack = None
-            while time.time() < t_end:
-                urs = self.read_urscript_registers()
-                if urs.get("ok"):
-                    last_ack = urs.get("ack_seq")
-                    if last_ack is not None and int(last_ack) == int(seq):
-                        logger.info("send_mode: ACK received! ack_seq=%d", last_ack)
-                        error_code = int(urs.get("error_code", 0))
-                        if error_code != 0:
-                            return {
-                                "ok": False,
-                                "seq": seq,
-                                "error": f"URScript rejected command: {UR_SCRIPT_ERROR_TEXT.get(error_code, f'error code {error_code}')}",
-                                "urscript": urs,
-                            }
-                        return {"ok": True, "seq": seq, "urscript": urs}
-                time.sleep(0.02)
+        logger.info("send_mode: Waiting for ACK (timeout=%ss)...", ack_timeout_s)
+        t_end = time.monotonic() + float(ack_timeout_s)
+        last_ack = None
+        while time.monotonic() < t_end:
+            if generation != self._stop_generation:
+                return {"ok": False, "seq": seq, "error": "Command cancelled by Stop"}
+            urs = self.read_urscript_registers()
+            if urs.get("ok"):
+                last_ack = urs.get("ack_seq")
+                if last_ack is not None and int(last_ack) == int(seq):
+                    logger.info("send_mode: ACK received! ack_seq=%d", last_ack)
+                    error_code = int(urs.get("error_code", 0))
+                    if error_code != 0:
+                        return {
+                            "ok": False,
+                            "seq": seq,
+                            "error": f"URScript rejected command: {UR_SCRIPT_ERROR_TEXT.get(error_code, f'error code {error_code}')}",
+                            "urscript": urs,
+                        }
+                    return {"ok": True, "seq": seq, "urscript": urs}
+            time.sleep(0.02)
 
-            logger.warning("send_mode: ACK TIMEOUT! sent_seq=%d, last_ack=%s", seq, last_ack)
-            dbg = self.get_dashboard_debug()
-            if dbg.get("ok"):
-                logger.warning("send_mode: Dashboard state on ACK timeout: %s", dbg)
-            hint = None
-            if dbg.get("programState") and "PLAYING" not in str(dbg.get("programState")).upper():
-                hint = "PolyScope program not PLAYING; load and press Play on the URP host program."
-            return {
-                "ok": False,
-                "seq": seq,
-                "error": f"ack timeout (last_ack={last_ack})",
-                "dashboard": dbg,
-                "hint": hint,
-                "urscript": self.read_urscript_registers(),
-            }
+        logger.warning("send_mode: ACK TIMEOUT! sent_seq=%d, last_ack=%s", seq, last_ack)
+        dbg = self.get_dashboard_debug()
+        if dbg.get("ok"):
+            logger.warning("send_mode: Dashboard state on ACK timeout: %s", dbg)
+        hint = None
+        if dbg.get("programState") and "PLAYING" not in str(dbg.get("programState")).upper():
+            hint = "PolyScope program not PLAYING; load and press Play on the URP host program."
+        return {
+            "ok": False,
+            "seq": seq,
+            "error": f"ack timeout (last_ack={last_ack})",
+            "dashboard": dbg,
+            "hint": hint,
+            "urscript": self.read_urscript_registers(),
+        }
 
     def start_massage(self, command: MassageCommand) -> Dict[str, Any]:
+        generation = self._stop_generation
         mode_id = self._resolve_mode_id(command.mode)
         if mode_id is None:
             return {"ok": False, "error": "unknown or missing mode"}
@@ -1010,6 +1018,7 @@ class UR10eMiddlewareLocalMode:
             duration_s=duration_s,
             force_enable=force_enable,
             wait_ack=True,
+            expected_stop_generation=generation,
         )
 
     def _wait_for_stop_ack(self, seq: int, timeout_s: float) -> Dict[str, Any]:
@@ -1032,6 +1041,8 @@ class UR10eMiddlewareLocalMode:
     def stop_massage(self) -> Dict[str, Any]:
         """Confirm STOP's own sequence and IDLE state before reporting success."""
         logger.info("stop_massage: Sending CMD=0 (soft stop)...")
+        with self._send_mode_lock:
+            self._stop_generation += 1
         result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
         if not result.get("ok"):
             return result
@@ -1066,10 +1077,12 @@ class UR10eMiddlewareLocalMode:
         URScript restores the previously paused mode and restarts motion from current TCP pose.
         Returns an error if nothing was paused (URScript will ACK with STATE_IDLE).
         """
+        generation = self._stop_generation
         logger.info("resume_massage: Sending CMD=6 (resume)...")
         if not self.rtde_io:
             return {"ok": False, "error": "rtde_io not connected"}
-        result = self.send_mode(6, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=True)
+        result = self.send_mode(6, speed_x100=100, force_x10=0, duration_s=0, force_enable=False,
+                                wait_ack=True, expected_stop_generation=generation)
         if result.get("ok"):
             urs = result.get("urscript") or {}
             if int(urs.get("state", 0)) != 1:  # STATE_RUNNING = 1

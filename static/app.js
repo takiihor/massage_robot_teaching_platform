@@ -364,12 +364,16 @@
             return Math.max(0, this.totalSec - Math.floor(this.getElapsedMs() / 1000));
         }
 
-        async start() {
+        async start(isCancelled = () => false) {
             const robotResult = await sendRobotStart(this.command);
+            this.simulation = !!robotResult.simulation;
+            if (isCancelled() || this.ended || this._stopPromise) {
+                await this.stop('voice_stop_during_start');
+                return false;
+            }
             if (!robotResult.ok) {
                 throw new Error(robotResult.error || 'Robot did not accept command');
             }
-            this.simulation = !!robotResult.simulation;
             this.startedAt = Date.now();
             this._timer = setInterval(() => {
                 if (!this.ended && !this.isPaused && this.getRemainingSec() <= 0) {
@@ -394,11 +398,13 @@
             if (robotResult.simulation) {
                 addSystemMessage('Robot not connected. Virtual patient session is running in simulation mode.', 'warning');
             }
+            return true;
         }
 
         async pause() {
-            if (this.ended || this.isPaused) return;
+            if (this.ended || this._stopPromise || this.isPaused) return;
             const ok = await sendRobotControl('pause');
+            if (this.ended || this._stopPromise) return;
             if (!ok) throw new Error('Robot pause failed');
             this.isPaused = true;
             this.pausedAt = Date.now();
@@ -408,8 +414,9 @@
         }
 
         async resume() {
-            if (this.ended || !this.isPaused) return;
+            if (this.ended || this._stopPromise || !this.isPaused) return;
             const ok = await sendRobotControl('resume');
+            if (this.ended || this._stopPromise) return;
             if (!ok) throw new Error('Robot resume failed');
             this.pausedMs += Math.max(0, Date.now() - this.pausedAt);
             this.pausedAt = 0;
@@ -424,7 +431,7 @@
             if (this._stopPromise) return this._stopPromise;
             this._stopPromise = (async () => {
                 window.dispatchEvent(new CustomEvent('massageSessionEndRequested', { detail: { reason } }));
-                const ok = await sendRobotControl('stop');
+                const ok = this.simulation === true || await sendRobotControl('stop');
                 if (!ok) throw new Error('Robot stop failed. Session remains active; retry stop.');
                 this.ended = true;
                 if (this._timer) {
@@ -441,6 +448,15 @@
             })();
             try {
                 await this._stopPromise;
+            } catch (error) {
+                // A cancelled startup can already have reached the robot. Keep
+                // its session reachable for Stop retries if confirmation fails.
+                if (!window.currentMassageSession) {
+                    window.currentMassageSession = this;
+                    state.uiMode = 'RUNNING';
+                    syncYear65UI();
+                }
+                throw error;
             } finally {
                 this._stopPromise = null;
             }
@@ -467,18 +483,15 @@
             addSystemMessage('A massage session is already running.', 'warning');
             return;
         }
-        const pending = { cancelled: false, command: { ...state.massage }, promise: null };
+        const pending = { cancelled: false, command: { ...state.massage }, session: null, promise: null };
         pendingMassageStart = pending;
         pending.promise = (async () => {
             try {
                 await refreshRobotHealth();
                 if (pending.cancelled) return;
                 const session = new TeachingMassageSession(pending.command);
-                await session.start();
-                if (pending.cancelled) {
-                    await session.stop('voice_stop_during_start');
-                    return;
-                }
+                pending.session = session;
+                if (!await session.start(() => pending.cancelled)) return;
                 voiceSetupSnapshot = null;
                 voiceSetupProgress = null;
                 clearVoiceSetupGuidance();
@@ -516,7 +529,13 @@
         clearVoiceSetupGuidance();
         if (pendingMassageStart) {
             pendingMassageStart.cancelled = true;
-            await pendingMassageStart.promise;
+            // Dispatch STOP while Start is still waiting for its robot ACK.
+            // Waiting for pending.promise here would let motion continue.
+            try {
+                await pendingMassageStart.session?.stop(reason);
+            } catch (error) {
+                addSystemMessage(error.message || 'Stop failed', 'error');
+            }
             if (!window.currentMassageSession && isVoiceSetupActive()) cancelVoiceMassageSetup();
             return;
         }
@@ -1272,11 +1291,24 @@
         return true;
     }
 
+    function isVoiceStopIntent(text) {
+        const lower = String(text || '').trim().toLowerCase();
+        if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(lower)) return false;
+        return /\b(?:stop|end\s*session|finish|quit)\b|停止療程|停止按摩|停止|結束|结束|完結|停機/.test(lower)
+            && !/\bsoft\s+stop\b/.test(lower);
+    }
+
     function handleTranscript(text) {
         const normalized = String(text || '').trim();
         if (!normalized) return;
         $('asrDebugText') && ($('asrDebugText').textContent = normalized);
         const lower = normalized.toLowerCase();
+
+        // Safety commands take precedence over setup words in the same phrase.
+        if (isVoiceStopIntent(normalized)) {
+            void stopSession('voice_endsession');
+            return;
+        }
 
         if (shouldEnterVoiceMassageSetup(normalized)) {
             enterVoiceMassageSetup();
@@ -1294,10 +1326,6 @@
             if (session && !session.isPaused) {
                 void session.pause().catch(error => addSystemMessage(error.message, 'error'));
             }
-            return;
-        }
-        if (/end session|endsession|finish|quit|stop massage|\bstop\b|停止療程|停止按摩|停止|結束|完結|停機/.test(lower)) {
-            void stopSession('voice_endsession');
             return;
         }
         if (/\b(?:resume|continue)\b|繼續/.test(lower)) {
@@ -1383,7 +1411,7 @@
                 const text = event.text || event.transcript || '';
                 const debug = $('asrDebugText');
                 if (debug && text) debug.textContent = text;
-                if (/^(?:stop(?: massage)?|end session|停止(?:按摩|療程)?|停機)[.!?。！？]*$/i.test(text.trim())) {
+                if (isVoiceStopIntent(text)) {
                     void stopSession('voice_endsession');
                     return;
                 }

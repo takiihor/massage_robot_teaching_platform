@@ -16,6 +16,7 @@ def python_block(source):
     """Convert explicit URScript end delimiters into Python indentation."""
     lines = []
     depth = 0
+    global_names = sorted(set(re.findall(r'^\s*global (\w+) =', source, re.MULTILINE)))
     for raw in source.splitlines():
         line = raw.split('#', 1)[0].strip()
         if not line:
@@ -29,9 +30,18 @@ def python_block(source):
         if branch:
             depth -= 1
         line = re.sub(r'\bp\[', '[', line)
+        line = re.sub(r'^thread ', 'def ', line)
+        line = re.sub(r'\brun (\w+)\(\)', r'_run_thread(\1)', line)
+        line = re.sub(r'^kill (.+)$', r'_kill_thread(\1)', line)
+        line = re.sub(r'^join (.+)$', r'_join_thread(\1)', line)
+        assignment = re.match(r'^global (\w+) = (.*)$', line)
+        if assignment:
+            line = assignment[1] + ' = ' + assignment[2]
         lines.append('    ' * depth + line)
         if line.endswith(':'):
             depth += 1
+            if line.startswith('def ') and global_names:
+                lines.append('    ' * depth + 'global ' + ', '.join(global_names))
     if depth:
         raise ValueError('Unclosed URScript block')
     return '\n'.join(lines)
@@ -67,7 +77,7 @@ class MotionHarness:
         self.interrupted = False
         self.source = SCRIPT.read_text()
         self.ns = {}
-        exec(self.source.split('def set_outputs', 1)[0], self.ns)
+        exec(self.source.split('# Blocking arm/gripper calls', 1)[0], self.ns)
 
         def move(target, a, v, r):
             if len(self.moves) >= batches * 50:
@@ -86,6 +96,12 @@ class MotionHarness:
                 self.ns['active_mode'] = 0
                 return 2 if pause else 1
             return 0
+
+        def move_interruptible(target, blend, prog):
+            if check(prog):
+                return True
+            move(target, self.ns['A_SLOW'], self.ns['V_SLOW'], blend)
+            return bool(check(prog))
 
         def sync():
             if all(abs(a - b) < 1e-10 for a, b in zip(self.actual, self.reference)):
@@ -114,6 +130,7 @@ class MotionHarness:
         self.ns.update(
             get_actual_tcp_pose=lambda: self.actual[:], pose_trans=pose_trans,
             movel=move, check_stop_or_pause=check, sync=sync,
+            movel_interruptible=move_interruptible,
             end_force_safe=end_force, apply_force_mode_z=apply_force,
             rg2_cycles_interruptible=grip, overforce_check_and_stop=overforce,
             read_input_integer_register=lambda register: -50 if force else 0,

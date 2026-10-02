@@ -12,7 +12,7 @@ test('year65 quick mode uses a single direct end-session control', () => {
 });
 
 test('year65 page references cache-busted stable runtime scripts', () => {
-  assert.match(html, /src="\/static\/app\.js\?v=112"/);
+  assert.match(html, /src="\/static\/app\.js\?v=114"/);
   assert.match(html, /src="\/static\/main\.module\.js\?v=101"/);
 });
 

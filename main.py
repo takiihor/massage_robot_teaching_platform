@@ -507,6 +507,9 @@ class LocalModeCommandRequest(BaseModel):
 
 
 ROBOT_OPERATION_LOCK = asyncio.Lock()
+ROBOT_STOP_LOCK = asyncio.Lock()
+ROBOT_STOP_GENERATION = 0
+ROBOT_PENDING_STOPS = 0
 
 
 async def _run_blocking_robot_op(fn, *args):
@@ -519,16 +522,41 @@ async def _run_blocking_robot_op(fn, *args):
     return await loop.run_in_executor(None, fn, *args)
 
 
-async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False):
-    """Run one blocking robot operation at a time and fail closed on timeout."""
-    async with ROBOT_OPERATION_LOCK:
+async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False,
+                        priority_stop: bool = False):
+    """Serialize ordinary operations, but let STOP preempt their ACK waits."""
+    global ROBOT_STOP_GENERATION, ROBOT_PENDING_STOPS
+    if priority_stop:
+        # STOP must reach RTDE even while a motion command is waiting for ACK.
+        ROBOT_STOP_GENERATION += 1
+        ROBOT_PENDING_STOPS += 1
         try:
-            return await asyncio.wait_for(_run_blocking_robot_op(fn, *args), timeout=timeout_s)
+            async with ROBOT_STOP_LOCK:
+                return await asyncio.wait_for(_run_blocking_robot_op(fn, *args), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Robot stop confirmation timed out")
+        finally:
+            ROBOT_PENDING_STOPS -= 1
+    if ROBOT_PENDING_STOPS:
+        return {"ok": False, "error": "Robot stop confirmation is pending; retry after Stop"}
+    generation = ROBOT_STOP_GENERATION
+    async with ROBOT_OPERATION_LOCK:
+        if generation != ROBOT_STOP_GENERATION:
+            return {"ok": False, "error": "Robot operation cancelled by Stop"}
+
+        def invoke():
+            # The executor may itself be queued behind other blocking work.
+            if generation != ROBOT_STOP_GENERATION:
+                return {"ok": False, "error": "Robot operation cancelled by Stop"}
+            return fn(*args)
+
+        try:
+            return await asyncio.wait_for(_run_blocking_robot_op(invoke), timeout=timeout_s)
         except asyncio.TimeoutError:
             logger.error("Robot operation timed out after %.1fs: %s", timeout_s, getattr(fn, "__name__", fn))
             if stop_on_timeout:
                 try:
-                    await asyncio.wait_for(_run_blocking_robot_op(ur10e_middleware.stop_massage), timeout=2.0)
+                    await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
                 except Exception as stop_exc:
                     logger.error("Timeout fallback stop failed: %s", stop_exc)
             raise HTTPException(
@@ -652,7 +680,7 @@ async def local_mode_command(req: LocalModeCommandRequest):
 
 @app.post("/api/stop")
 async def local_mode_stop():
-    return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0)
+    return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,7 +708,7 @@ async def massage_start(req: MassageCommandRequest):
 
 @app.post("/massage/stop")
 async def massage_stop():
-    return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=4.0)
+    return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=4.0, priority_stop=True)
 
 
 @app.post("/massage/pause")

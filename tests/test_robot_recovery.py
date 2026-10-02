@@ -2,6 +2,8 @@
 import sys
 from types import SimpleNamespace
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, Mock, patch
 
 from robot import ur10e_middleware_local_mode as middleware
@@ -119,6 +121,51 @@ class RobotRecoveryTest(unittest.TestCase):
         self.robot._resync_sequence_from_robot.assert_called_once()
         self.robot._neutralize_motion_on_connect.assert_called_once()
         self.robot._restore_speed_slider.assert_not_called()
+
+
+class StopPreemptionTest(unittest.TestCase):
+    def test_stop_writes_while_start_waits_for_ack(self):
+        robot = middleware.UR10eMiddlewareLocalMode(default_ip='test-robot')
+        registers = {}
+        waiting = threading.Event()
+        robot.rtde_io = Mock()
+        robot.rtde_io.setInputIntRegister.side_effect = registers.__setitem__
+        robot._restore_speed_slider = Mock()
+
+        def read():
+            seq = registers.get(middleware.IN_CMD_SEQ, -1)
+            if registers.get(middleware.IN_CMD) == 0:
+                return dict(ok=True, ack_seq=seq, state=0, error_code=0)
+            waiting.set()
+            return dict(ok=True, ack_seq=-1, state=1, error_code=0)
+
+        robot.read_urscript_registers = read
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            starting = pool.submit(robot.send_mode, 4)
+            self.assertTrue(waiting.wait(1), 'Start should be waiting for ACK')
+            stopping = pool.submit(robot.stop_massage)
+            self.assertTrue(stopping.result(timeout=0.5)['ok'])
+            self.assertIn('cancelled', starting.result(timeout=0.5)['error'])
+        self.assertEqual(registers[middleware.IN_CMD], 0)
+
+    def test_stop_during_preflight_prevents_late_motion_write(self):
+        robot = middleware.UR10eMiddlewareLocalMode(default_ip='test-robot')
+        robot.rtde_io = Mock()
+        robot._restore_speed_slider = Mock()
+        robot._arm_host_program = Mock(return_value=dict(ok=True))
+        robot.read_urscript_registers = Mock(return_value=dict(ok=True, cal_status=0))
+
+        def preflight():
+            # STOP completed while the earlier Start was still inspecting state.
+            with robot._send_mode_lock:
+                robot._stop_generation += 1
+            return dict(ok=True)
+
+        robot._motion_preflight = preflight
+        result = robot.start_massage(middleware.MassageCommand(mode='knead'))
+        self.assertFalse(result['ok'])
+        self.assertIn('cancelled', result['error'])
+        robot.rtde_io.setInputIntRegister.assert_not_called()
 
 
 if __name__ == '__main__':
