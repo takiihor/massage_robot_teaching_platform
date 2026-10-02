@@ -85,6 +85,43 @@ class RobotRecoveryTest(unittest.TestCase):
         self.robot.read_urscript_registers = Mock(return_value=self.registers(7, error=1))
         self.assertFalse(self.robot.stop_massage()['ok'])
 
+    def test_returning_home_ack_does_not_trigger_hard_stop_fallback(self):
+        self.robot.send_mode = Mock(return_value=dict(ok=True, seq=7))
+        self.robot.read_urscript_registers = Mock(return_value=self.registers(7, state=3))
+        result = self.robot.stop_massage()
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['return_home_pending'])
+        self.robot._hard_stop_rtde_control.assert_not_called()
+
+    def test_home_pose_is_captured_once_and_uploaded_in_acknowledged_halves(self):
+        home = [0.3, 0.1, 0.35, 3.14, 0.2, 0.1]
+        self.robot.rtde_r = Mock()
+        self.robot.rtde_r.getActualTCPPose.return_value = home
+        self.robot._capture_home_pose()
+        self.robot.rtde_r.getActualTCPPose.return_value = [0.0] * 6
+        self.robot._capture_home_pose()
+        self.assertEqual(self.robot._home_pose, home)
+        self.robot.send_mode = Mock(side_effect=[
+            dict(ok=True, urscript=dict(current_mode=7)),
+            dict(ok=True, urscript=dict(current_mode=8))])
+        self.assertTrue(self.robot._upload_home_pose()['ok'])
+        calls = self.robot.send_mode.call_args_list
+        self.assertEqual([call.args[0] for call in calls], [7, 8])
+        self.assertEqual([call.kwargs['home_values'] for call in calls], [home[:3], home[3:]])
+
+    def test_home_upload_rejects_an_old_host_that_acks_without_support(self):
+        self.robot._home_pose = [0.3, 0.1, 0.35, 3.14, 0, 0]
+        self.robot.send_mode = Mock(return_value=dict(ok=True, urscript=dict(current_mode=0)))
+        self.assertFalse(self.robot._upload_home_pose()['ok'])
+        self.robot.send_mode.assert_called_once()
+
+    def test_start_cannot_interrupt_a_home_return(self):
+        self.robot.rtde_io = Mock()
+        self.robot.read_urscript_registers = Mock(return_value=self.registers(7, state=3))
+        result = self.robot.send_mode(4)
+        self.assertFalse(result['ok'])
+        self.robot.rtde_io.setInputIntRegister.assert_not_called()
+
     def test_unreachable_reconnect_never_enters_native_rtde_connect(self):
         self.robot._create_rtde_receive = Mock()
         with patch.object(middleware.socket, 'create_connection', side_effect=OSError('unreachable')):
@@ -109,6 +146,8 @@ class RobotRecoveryTest(unittest.TestCase):
 
     def test_successful_reconnect_resynchronizes_and_neutralizes_stale_motion(self):
         receive = Mock()
+        receive.getActualTCPPose.return_value = [0.3, 0.1, 0.35, 3.14, 0, 0]
+        self.robot._upload_home_pose = Mock(return_value=dict(ok=True))
         io = Mock()
         self.robot._create_rtde_receive = Mock(return_value=receive)
         self.robot._resync_sequence_from_robot = Mock()

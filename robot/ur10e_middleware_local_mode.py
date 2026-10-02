@@ -28,6 +28,7 @@ import os
 import socket
 import time
 import json
+import math
 import logging
 import threading
 from dataclasses import dataclass
@@ -75,6 +76,11 @@ IN_POSE_RY = 28
 IN_POSE_RZ = 29
 
 # Calibration command IDs (must match .urs)
+CMD_HOME_XYZ = 7
+CMD_HOME_ROTATION = 8
+IN_HOME_REGISTERS = (18, 19, 20)
+STATE_RETURNING_HOME = 3
+
 CMD_SAVE_POINT_A = 10
 CMD_SAVE_POINT_B = 11
 CMD_MOVE_TO_A = 12
@@ -211,6 +217,7 @@ class UR10eMiddlewareLocalMode:
         self._force_enable_supported = True
         self._send_mode_lock = threading.Lock()
         self._stop_generation = 0
+        self._home_pose: Optional[List[float]] = None
 
         self._stop_evt = threading.Event()
         self._telemetry_thread: Optional[threading.Thread] = None
@@ -258,26 +265,57 @@ class UR10eMiddlewareLocalMode:
         self._restore_speed_slider()
         self._write_force_enable(False)
         self._resync_sequence_from_robot()
-        self._neutralize_motion_on_connect()
+        self._capture_home_pose()
+        neutralized = self._neutralize_motion_on_connect()
+        if neutralized.get("ok"):
+            uploaded = self._upload_home_pose()
+            if not uploaded.get("ok"):
+                logger.warning("Startup home upload pending: %s", uploaded.get("error"))
 
         self._stop_evt.clear()
         self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
         self._telemetry_thread.start()
 
-    def _neutralize_motion_on_connect(self) -> None:
-        """Best-effort STOP edge to prevent stale auto motion after connect."""
-        if not self.rtde_io:
+    def _capture_home_pose(self) -> None:
+        """Latch the first connected pose for this backend process, never on reconnect."""
+        if self._home_pose is not None:
             return
+        pose = list(self.rtde_r.getActualTCPPose())
+        if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
+            raise RuntimeError("Robot startup TCP pose is invalid")
+        self._home_pose = pose
+        logger.info("Captured backend startup home pose: %s", pose)
+
+    def _upload_home_pose(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
+        if self._home_pose is None:
+            return {"ok": False, "error": "Robot startup home pose has not been captured"}
+        generation = self._stop_generation if expected_stop_generation is None else expected_stop_generation
+        for mode, values in ((CMD_HOME_XYZ, self._home_pose[:3]),
+                             (CMD_HOME_ROTATION, self._home_pose[3:])):
+            result = self.send_mode(mode, duration_s=-1, force_x10=0,
+                                    home_values=values, expected_stop_generation=generation)
+            if not result.get("ok"):
+                return result
+            if (result.get("urscript") or {}).get("current_mode") != mode:
+                return {"ok": False, "error": "Host does not support startup home; load the updated ur10e_demo_smooth_27.urs"}
+        return result
+
+    def _neutralize_motion_on_connect(self) -> Dict[str, Any]:
+        """Confirm a non-travelling STOP before sending startup home payloads."""
+        if not self.rtde_io:
+            return {"ok": False, "error": "rtde_io not connected"}
         try:
             seq = self._next_seq()
             self.rtde_io.setInputIntRegister(IN_SPEED_X100, int(self._speed_scale_x100))
             self.rtde_io.setInputIntRegister(IN_FORCE_X10, 0)
-            self.rtde_io.setInputIntRegister(IN_DURATION_S, 0)
+            self.rtde_io.setInputIntRegister(IN_DURATION_S, -1)
             self.rtde_io.setInputIntRegister(IN_CMD, 0)
             self.rtde_io.setInputIntRegister(IN_CMD_SEQ, int(seq))
             logger.info("connect: sent startup STOP neutralization seq=%d", seq)
+            return self._wait_for_stop_ack(seq, 0.4)
         except Exception:
             logger.warning("connect: failed to send startup STOP neutralization", exc_info=True)
+            return {"ok": False, "error": "Startup STOP failed"}
 
     def _resync_sequence_from_robot(self) -> None:
         """Choose a new command sequence that cannot equal the host's last ACK.
@@ -410,7 +448,10 @@ class UR10eMiddlewareLocalMode:
             self.dashboard = DashboardClient(self._ip, timeout=self.dashboard_timeout)
             self.connected = True
             self._resync_sequence_from_robot()
-            self._neutralize_motion_on_connect()
+            self._capture_home_pose()
+            neutralized = self._neutralize_motion_on_connect()
+            if neutralized.get("ok"):
+                self._upload_home_pose()
             self._clear_error()
         except Exception as exc:
             self._mark_error(f"reconnect failed: {exc}")
@@ -738,7 +779,7 @@ class UR10eMiddlewareLocalMode:
 
     def _ensure_speed_slider_for_motion(self, mode: int) -> None:
         # Avoid restoring speed slider on pause; restore for any motion-related command.
-        if int(mode) != 0 and int(mode) != 5:
+        if int(mode) not in (0, 5, CMD_HOME_XYZ, CMD_HOME_ROTATION):
             self._restore_speed_slider()
 
     def _motion_preflight(self) -> Dict[str, Any]:
@@ -779,15 +820,16 @@ class UR10eMiddlewareLocalMode:
             }
         return {"ok": True, "dashboard": dashboard}
 
-    def _arm_host_program(self) -> Dict[str, Any]:
+    def _arm_host_program(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
         """Send and confirm the STOP edge required by the local-mode URScript."""
         result = self.send_mode(
             0,
             speed_x100=100,
             force_x10=0,
-            duration_s=0,
+            duration_s=-1,
             force_enable=False,
             wait_ack=True,
+            expected_stop_generation=expected_stop_generation,
         )
         if not result.get("ok"):
             result.setdefault("error", "Unable to arm the PolyScope host program")
@@ -795,6 +837,8 @@ class UR10eMiddlewareLocalMode:
                 "hint",
                 "Confirm the correct host program is PLAYING and its RTDE register map matches this middleware.",
             )
+        if result.get("ok"):
+            return self._upload_home_pose(expected_stop_generation)
         return result
 
     def _hard_stop_rtde_control(self) -> None:
@@ -897,6 +941,7 @@ class UR10eMiddlewareLocalMode:
         wait_ack: bool = True,
         ack_timeout_s: float = 2.0,
         expected_stop_generation: Optional[int] = None,
+        home_values: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         """
         Send a mode request via RTDE registers.
@@ -923,11 +968,20 @@ class UR10eMiddlewareLocalMode:
         with self._send_mode_lock:
             if generation != self._stop_generation:
                 return {"ok": False, "error": "Command cancelled by Stop"}
+            urs = self.read_urscript_registers()
+            if (urs.get("ok") and urs.get("state") == STATE_RETURNING_HOME
+                    and (effective_mode not in (0, 5) or duration_s == -1)):
+                return {"ok": False, "error": "Robot is returning home; wait until it is idle"}
             self._ensure_speed_slider_for_motion(effective_mode)
             seq = self._next_seq()
             logger.info("send_mode: generated seq=%d", seq)
 
             try:
+                # Publish each home half before its command sequence.
+                if home_values is not None:
+                    for register, value in zip(IN_HOME_REGISTERS, home_values):
+                        if self.rtde_io.setInputDoubleRegister(register, float(value)) is False:
+                            raise RuntimeError("Home pose register write failed")
                 # Write command registers
                 logger.info("send_mode: Writing registers IN_CMD=%d, IN_CMD_SEQ=%d", IN_CMD, IN_CMD_SEQ)
                 self._write_force_enable(bool(force_enable))
@@ -1005,7 +1059,7 @@ class UR10eMiddlewareLocalMode:
                     "calibration_status": cal_status,
                     "calibration_status_text": self._calibration_status_to_text(cal_status),
                 }
-        arm_result = self._arm_host_program()
+        arm_result = self._arm_host_program(expected_stop_generation=generation)
         if not arm_result.get("ok"):
             return arm_result
         force_x10 = self._resolve_force_x10(command.intensity)
@@ -1029,8 +1083,10 @@ class UR10eMiddlewareLocalMode:
             if urs.get("ok") and int(urs.get("ack_seq", -1)) == seq:
                 if int(urs.get("error_code", 0)) != 0:
                     return {"ok": False, "seq": seq, "error": "Robot rejected stop", "urscript": urs}
-                if int(urs.get("state", -1)) == 0:
-                    return {"ok": True, "seq": seq, "urscript": urs}
+                state = int(urs.get("state", -1))
+                if state in (0, STATE_RETURNING_HOME):
+                    return {"ok": True, "seq": seq, "urscript": urs,
+                            "return_home_pending": state == STATE_RETURNING_HOME}
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -1039,7 +1095,7 @@ class UR10eMiddlewareLocalMode:
                 "error": "Robot stop was not confirmed. Retry Stop or use the pendant Stop button."}
 
     def stop_massage(self) -> Dict[str, Any]:
-        """Confirm STOP's own sequence and IDLE state before reporting success."""
+        """Confirm STOP promptly; telemetry reports completion of its home return."""
         logger.info("stop_massage: Sending CMD=0 (soft stop)...")
         with self._send_mode_lock:
             self._stop_generation += 1

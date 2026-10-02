@@ -21,6 +21,8 @@ def python_block(source):
         line = raw.split('#', 1)[0].strip()
         if not line:
             continue
+        if line == 'return':
+            raise ValueError('URScript requires a return value or return None')
         if line == 'end':
             depth -= 1
             if depth < 0:
@@ -138,7 +140,31 @@ class MotionHarness:
             to_str=str, floor=math.floor, active_mode=4, last_seq=1,
             last_force_x10=0, start_pose=reference[:], task_frame=reference[:])
 
-        for name in ('move_to_pose_interruptible', 'move_in_frame_interruptible'):
+        class Interrupted(Exception):
+            pass
+
+        def worker_move(target, a, v, r):
+            if check(0):
+                raise Interrupted()
+            move(target, a, v, r)
+            if check(0):
+                raise Interrupted()
+
+        def wait_for_action(prog):
+            try:
+                self.ns['blocking_action_worker']()
+            except Interrupted:
+                return True
+            return bool(check(prog))
+
+        self.ns.update(movel=worker_move, wait_for_blocking_action=wait_for_action,
+                       blocking_action_done=False)
+        worker = re.search(r'^thread blocking_action_worker\(.*?^end$', self.source,
+                           re.MULTILINE | re.DOTALL).group()
+        exec(python_block(worker), self.ns)
+
+        for name in ('move_to_pose_interruptible', 'move_in_frame_interruptible',
+                     'batch_return_interruptible'):
             helper = re.search(r'^def ' + name + r'\(.*?^end$', self.source,
                                re.MULTILINE | re.DOTALL).group()
             exec(python_block(helper), self.ns)
@@ -152,6 +178,11 @@ class MotionHarness:
 
 
 class RobotReferenceFrameTest(unittest.TestCase):
+    def test_complete_script_has_balanced_blocks_and_explicit_return_values(self):
+        compile(python_block(SCRIPT.read_text()), str(SCRIPT), 'exec')
+        with self.assertRaisesRegex(ValueError, 'return None'):
+            python_block('def invalid():\n  return\nend')
+
     def assert_pose_equal(self, actual, expected):
         for a, b in zip(actual, expected):
             self.assertAlmostEqual(a, b, places=10)
@@ -168,8 +199,8 @@ class RobotReferenceFrameTest(unittest.TestCase):
                 robot.run()
                 self.assertEqual(robot.completed, 20)
                 for batch in range(20):
-                    moves = robot.moves[batch * 22:(batch + 1) * 22]
-                    self.assertEqual(len(moves), 22)
+                    moves = robot.moves[batch * 15:(batch + 1) * 15]
+                    self.assertEqual(len(moves), 15)
                     # Each station ends at an absolute offset of the SAME frame.
                     for station in range(4):
                         expected = pose_trans(reference, [0, (station + 1) * .05, 0, 0, 0, 0])
@@ -177,14 +208,15 @@ class RobotReferenceFrameTest(unittest.TestCase):
                     lifted_start = pose_trans(reference, [0, 0, -.05, 0, 0, 0])
                     self.assert_pose_equal(moves[-2][0], lifted_start)
                     self.assert_pose_equal(moves[-1][0], reference)
-                    self.assertEqual(moves[-1][1], 0)
+                    self.assertEqual([move[1] for move in moves[-3:]],
+                                     [robot.ns['R_BLEND'], robot.ns['R_BLEND'], 0])
                 self.assert_pose_equal(robot.actual, reference)
 
     def test_inverted_tool_lifts_above_contact_and_returns_at_same_height(self):
         reference = [0.3, 0.1, 0.35, math.pi, 0, 0]
         robot = MotionHarness(reference)
         robot.run()
-        for index in [0, 1, 3, 4, 6, 7, 9, 10, 12, 20]:
+        for index in [0, 1, 3, 4, 6, 7, 9, 10, 12, 13]:
             self.assertAlmostEqual(robot.moves[index][0][2], 0.40)
         self.assertAlmostEqual(robot.moves[-1][0][2], 0.35)
         for grip_pose in robot.grip_positions:
@@ -199,13 +231,13 @@ class RobotReferenceFrameTest(unittest.TestCase):
         for frame in robot.force_frames:
             self.assert_pose_equal(frame, reference)
         for batch in range(3):
-            for _, _, force_active in robot.moves[batch * 22 + 12:(batch + 1) * 22]:
+            for _, _, force_active in robot.moves[batch * 15 + 12:(batch + 1) * 15]:
                 self.assertFalse(force_active)
         self.assert_pose_equal(robot.actual, reference)
 
     def test_stop_and_pause_abort_forward_or_return_without_recovery_movement(self):
         for pause in (False, True):
-            for after in (0, 2, 12, 13, 17, 21):
+            for after in (0, 2, 12, 13, 14):
                 with self.subTest(pause=pause, after=after):
                     robot = MotionHarness([0.3, 0.1, 0.35, math.pi, 0, 0],
                                           interrupt_after=after, pause=pause)
