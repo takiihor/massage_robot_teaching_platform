@@ -47,6 +47,8 @@ const translations = {
     // ========================================
     voiceSelectLabel: '語音選擇',
     voiceSelectInfo: '揀選你鍾意嘅朗讀聲音',
+    voiceResponseLanguageLabel: '語音回應語言',
+    voiceResponseLanguageInfo: '只影響語音回應；語音識別預設接受廣東話及 English。',
     voiceGroupCantonese: '🔊 Edge TTS - 粵語 (Cantonese)',
     voiceGroupEnglish: '🔊 Edge TTS - English',
     voiceGroupAzureZh: '☁️ Azure TTS - 粵語 (雲端)',
@@ -415,6 +417,8 @@ const translations = {
     // ========================================
     voiceSelectLabel: 'Voice Selection',
     voiceSelectInfo: 'Select your preferred text-to-speech voice',
+    voiceResponseLanguageLabel: 'Voice Response Language',
+    voiceResponseLanguageInfo: 'Changes spoken responses only. Recognition accepts Cantonese and English by default.',
     voiceGroupCantonese: '🔊 Edge TTS - Cantonese',
     voiceGroupEnglish: '🔊 Edge TTS - English',
     voiceGroupAzureZh: '☁️ Azure TTS - Cantonese (Cloud)',

@@ -12,8 +12,14 @@ test('year65 quick mode uses a single direct end-session control', () => {
 });
 
 test('year65 page references cache-busted stable runtime scripts', () => {
-  assert.match(html, /src="\/static\/app\.js\?v=114"/);
+  assert.match(html, /src="\/static\/app\.js\?v=119"/);
   assert.match(html, /src="\/static\/main\.module\.js\?v=101"/);
+});
+
+test('voice language setting describes response audio and ASR shows both languages', () => {
+  assert.match(html, /data-i18n="voiceResponseLanguageLabel">Voice Response Language/);
+  assert.doesNotMatch(html, /語音識別與語音回應語言/);
+  assert.match(html, /id="y65AsrLangText">ASR 粵 \/ EN/);
 });
 
 test('year65 page does not reference removed placeholder browser assets', () => {

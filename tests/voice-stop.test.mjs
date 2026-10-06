@@ -12,7 +12,7 @@ async function harness() {
   const events = [];
   const window = {
     Year65UI: {}, NursingVitalsMonitor: {}, NursingInstructorTools: {},
-    setTimeout() {}, addEventListener() {},
+    setTimeout() {}, clearTimeout() {}, addEventListener() {},
     dispatchEvent: event => events.push(event),
     RobotController: { sendRobotCommand: async endpoint => { calls.push(endpoint); return true; } },
     sttService: Object.fromEntries(['Result', 'Partial', 'Started', 'Stopped', 'Error'].map(name =>

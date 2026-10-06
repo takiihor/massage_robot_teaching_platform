@@ -28,6 +28,11 @@ async function mockRobot(page, connected = true, simulation = false) {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.clear());
+  await page.route('**/robot/state', route => route.fulfill({ json: {
+    connected: false, simulation_enabled: true, state: {}
+  } }));
+  await page.route('**/api/command', route => route.fulfill({ json: { status: 'success' } }));
+  await page.route('**/api/stop', route => route.fulfill({ json: { status: 'success' } }));
   await page.goto('/');
   await page.waitForFunction(() => window.__stableSttBound && window.app);
   await page.evaluate(() => {

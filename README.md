@@ -50,6 +50,16 @@ PORT=5033
 ./start.sh
 ```
 
+To run the server directly, activate the same environment used by `start.sh`:
+
+```bash
+source venv/bin/activate
+python3 main.py
+```
+
+Both commands serve the same dashboard and voice setup runtime. Use the URL
+printed at startup; `main.py` reads the configured `PORT` from `.env`.
+
 Default local URL:
 
 ```text
@@ -77,6 +87,25 @@ computer (or use HTTPS on another computer), allow microphone access, and click
 once if the browser requests it. Connect to the pendant IP in Settings, then
 keep the host program PLAYING in PolyScope. RTDE connectivity alone does not
 mean the host program is running.
+
+Voice recognition uses the Cantonese command profile by default, which accepts
+the Cantonese and English commands used by this demo. Settings' Voice Response
+Language controls spoken response audio only; selecting English no longer
+changes recognition to an English-only profile. The ASR indicator shows both
+languages, and previously saved voice-language preferences do not change ASR.
+
+During voice setup, mode, intensity, and duration selections give visual feedback
+after an interim result settles for 200 ms. The current question stays in place
+until final recognition commits the selection and plays the next spoken prompt.
+Revised interim results update the preview without advancing setup. Duplicate
+finals and corrections within a step do not replay its prompt.
+Hiding and reopening the setup drawer, repeating the wake phrase, or restarting
+recognition preserves completed steps; a new setup begins after cancellation.
+Start and Resume still require final recognition, while Stop uses interim results.
+Spoken Cancel (English) and 取消 (Chinese) close setup and restore its saved
+settings on interim recognition, interrupt pending guidance, and play a
+cancellation response in the selected response language. Delayed final cancel
+results neither reopen setup nor repeat the response.
 
 Current demo behavior:
 
