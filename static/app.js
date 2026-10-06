@@ -9,6 +9,9 @@
 
     const DEFAULT_VITALS = { hr: 89, sbp: 115, dbp: 73, rr: 18, spo2: 97 };
     const DEFAULT_SUBJECTIVE = { pain: 0, anxiety: 0, comfort: 2 };
+    // Keep the Cantonese profile that accepts Cantonese and English commands.
+    // Response audio preferences must never switch recognition to English-only.
+    const DEFAULT_ASR_LANGUAGE = 'zh-HK';
     const SETUP_BASELINE_CUES = { pain: 'NONE', anxiety: 'NONE', comfort: 'SLIGHTLY_UNCOMFORTABLE' };
     const WAKE_WORD_DEFAULT_ON_MIGRATION_KEY = 'wakeWordDefaultOnMigrated.20260706';
     const INTENSITY_TEXT = { low: '小', mid: '中', high: '大' };
@@ -57,9 +60,10 @@
     let pendingMassageStart = null;
     let voiceSetupSnapshot = null;
     let voiceSetupProgress = null;
+    let voiceSetupPreview = null;
     let asrWakePhraseFragments = [];
     let voiceSetupGuidanceToken = 0;
-    let lastVoiceSetupGuidance = { assetId: '', at: 0 };
+    let lastVoiceSetupGuidance = '';
 
     function $(id) {
         return document.getElementById(id);
@@ -598,7 +602,7 @@
         $('voiceSetupBanner')?.classList.add('hidden');
     }
 
-    function cancelVoiceMassageSetup() {
+    function cancelVoiceMassageSetup({ speak = false } = {}) {
         clearVoiceSetupGuidance();
         const snapshot = voiceSetupSnapshot;
         voiceSetupSnapshot = null;
@@ -620,6 +624,15 @@
         resetAsrWakePhraseFragments();
         hideVoiceSetupBanner();
         announce('Voice setup cancelled');
+        if (speak) {
+            const manager = ensureAudioManager();
+            Promise.resolve(manager?.playAsset?.('system.cancelled', {
+                priority: window.AudioPriority?.P1 ?? 1,
+                ttlMs: 3000,
+                interrupt: true,
+                eventTime: Date.now()
+            })).catch(error => console.warn('[stable-app] cancellation audio failed:', error));
+        }
     }
 
     function openPinModal() {
@@ -745,11 +758,7 @@
                 const language = normalizeSettingLanguage(event.target.value);
                 localStorage.setItem('voiceLanguage', language);
                 event.target.value = language;
-                updateAsrLanguageBadge();
                 warmVoiceSetupAudio();
-                if (window.sttService?.isActive?.()) {
-                    window.sttService.setLanguage?.(getAsrLanguage());
-                }
             });
         }
         const wakeToggle = $('wakeWordToggle');
@@ -780,8 +789,7 @@
     }
 
     function getAsrLanguage() {
-        const voiceLang = localStorage.getItem('voiceLanguage') || $('voiceLanguageSelect')?.value || 'zh';
-        return voiceLang === 'en' ? 'en-US' : 'zh-HK';
+        return DEFAULT_ASR_LANGUAGE;
     }
 
     function isWakeWordEnabled() {
@@ -799,7 +807,7 @@
 
     function updateAsrLanguageBadge() {
         const badge = $('y65AsrLangText');
-        if (badge) badge.textContent = getAsrLanguage() === 'en-US' ? 'ASR EN' : 'ASR 粵';
+        if (badge) badge.textContent = 'ASR 粵 / EN';
     }
 
     function normalizeSpokenNumberToken(value) {
@@ -993,9 +1001,15 @@
         }[field] || null;
     }
 
+    function clearVoiceSetupPreview() {
+        window.clearTimeout(voiceSetupPreview?.timer);
+        voiceSetupPreview = null;
+    }
+
     function clearVoiceSetupGuidance() {
+        clearVoiceSetupPreview();
         voiceSetupGuidanceToken++;
-        lastVoiceSetupGuidance = { assetId: '', at: 0 };
+        lastVoiceSetupGuidance = '';
         window.__setupPromptPlaying = false;
         window.__setupAsrAcceptAfter = 0;
         if (window.audioManager?.getStatus?.().current?.assetId?.startsWith('system.')) {
@@ -1009,8 +1023,10 @@
         if (!assetId || !manager?.playAsset) return;
 
         const eventTime = Date.now();
-        if (lastVoiceSetupGuidance.assetId === assetId && eventTime - lastVoiceSetupGuidance.at < 1400) return;
-        lastVoiceSetupGuidance = { assetId, at: eventTime };
+        // Guidance belongs to the current committed step. Delayed duplicate
+        // results or corrections within that step must not replay its prompt.
+        if (lastVoiceSetupGuidance === assetId) return;
+        lastVoiceSetupGuidance = assetId;
         const token = ++voiceSetupGuidanceToken;
         window.__lastVoiceSetupGuidanceAsset = assetId;
         window.__setupPromptPlaying = true;
@@ -1040,8 +1056,10 @@
     function updateVoiceSetupPrompt(summary = '', options = {}) {
         const prompt = $('voiceSetupPrompt');
         if (!prompt) return;
+        // Interim text is feedback only; both the visible question and spoken
+        // guidance must follow the same committed progress used to parse answers.
         const next = getVoiceSetupMissingFields()[0];
-        const prefix = summary ? `Selected: ${summary}. ` : '';
+        const prefix = summary ? `${options.previewConfig ? 'Recognizing' : 'Selected'}: ${summary}. ` : '';
         const prompts = {
             mode: 'Select massage mode: mode 1, 2, 3, or 4.',
             intensity: 'Select intensity: low, medium, or high.',
@@ -1049,8 +1067,43 @@
         };
         prompt.textContent = next
             ? `${prefix}${prompts[next]}`
-            : `Setup complete: ${summarizeVoiceConfig(state.massage)}. Say "start massage" to begin.`;
+            : `${options.previewConfig ? prefix : ''}Setup complete: ${summarizeVoiceConfig(state.massage)}. Say "start massage" to begin.`;
         if (options.playGuidance) playVoiceSetupGuidance(next || 'confirm');
+    }
+
+    function voiceConfigSignature(config) {
+        return JSON.stringify(['mode', 'intensity', 'durationMin'].map(key => config[key] ?? null));
+    }
+
+    function previewVoiceMassageSetup(transcript) {
+        // Interim hypotheses can change. Give feedback early, but leave both
+        // committed settings and step progress untouched until a final result.
+        if (!isVoiceSetupActive() || window.currentMassageSession || pendingMassageStart) return;
+        const parsed = parseVoiceMassageConfig(transcript);
+        const config = { ...parsed.config, ...parseVoiceSetupStepConfig(transcript, parsed.config) };
+        if (parsed.invalidConfigFields.length || parsed.hasStartIntent
+            || isVoiceSetupCancelIntent(transcript) || !Object.keys(config).length) {
+            const hadPreview = !!voiceSetupPreview;
+            if (hadPreview) {
+                clearVoiceSetupPreview();
+                updateVoiceSetupPrompt();
+            }
+            return;
+        }
+        const signature = voiceConfigSignature(config);
+        if (voiceSetupPreview?.signature === signature) return;
+        window.clearTimeout(voiceSetupPreview?.timer);
+        const preview = { config, signature, timer: null };
+        voiceSetupPreview = preview;
+        // A short settling period absorbs rapidly revised number hypotheses;
+        // it does not depend on the provider's utterance-finalization timeout.
+        preview.timer = window.setTimeout(() => {
+            if (voiceSetupPreview !== preview || !isVoiceSetupActive()
+                || window.currentMassageSession || pendingMassageStart) return;
+            const summary = summarizeVoiceConfig(config);
+            updateVoiceSetupPrompt(summary, { previewConfig: config });
+            announce(`Recognizing voice setup: ${summary}`);
+        }, 200);
     }
 
     function parseVoiceSetupStepConfig(transcript, parsedConfig = {}) {
@@ -1123,7 +1176,15 @@
             window.__lastAsrWakeDecision = { raw, matched: false, reason: 'session-running' };
             return false;
         }
-        if (isVoiceSetupActive() && $('y65StudentDrawer')?.classList.contains('open')) {
+        if (isVoiceSetupActive()) {
+            // Hiding the drawer does not end setup. A repeated or delayed wake
+            // phrase may reopen it, but must never reset confirmed progress.
+            if (!$('y65StudentDrawer')?.classList.contains('open')
+                && isMassageSetupWakePhrase(raw, allowPartial)) {
+                toggleStudentDrawer(true);
+                updateVoiceSetupPrompt();
+                showVoiceSetupBanner();
+            }
             window.__lastAsrWakeDecision = { raw, matched: false, reason: 'setup-already-active' };
             return false;
         }
@@ -1241,11 +1302,31 @@
             || hasFuzzyChineseMassageSetting(chineseCompact);
     }
 
+    function isVoiceGuidanceEcho(transcript) {
+        return /^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认|settings?\s+cancel(?:led|ed)?\b|已(?:經|经)?取消)/i.test(String(transcript || '').trim());
+    }
+
     function isVoiceSetupCancelIntent(transcript) {
         const text = String(transcript || '').trim();
         const lower = text.toLowerCase();
+        if (isVoiceGuidanceEcho(text)
+            || /\b(?:do\s+not|don['’]?t|never)\s+(?:cancel|clear|reset|undo|abort|close|exit|quit)\b/.test(lower)
+            || /(?:唔好|不要|別|别)\s*(?:取消|重設|重置|清除|關閉|关闭|退出)/.test(text)) return false;
         return /\b(cancel|cancel setup|cancel selection|clear|reset|undo|abort|never mind|nevermind|close setup|exit setup|quit setup)\b/.test(lower)
             || /取消|唔要|不要|不用|重設|重置|清除|關閉設定|关闭设置|退出設定|退出设置/.test(text);
+    }
+
+    function handleVoiceSetupCancellation(transcript) {
+        if (!isVoiceSetupCancelIntent(transcript)) return false;
+        if (pendingMassageStart) {
+            // Cancelling while Start awaits its ACK must also cancel motion.
+            void stopSession('voice_setup_cancel');
+        } else if (isVoiceSetupActive()) {
+            cancelVoiceMassageSetup({ speak: true });
+        }
+        // Consume duplicates even after setup closes, before wake detection can
+        // reopen it from a delayed final such as "cancel massage settings".
+        return true;
     }
 
     function applyVoiceMassageSetup(transcript) {
@@ -1293,7 +1374,7 @@
 
     function isVoiceStopIntent(text) {
         const lower = String(text || '').trim().toLowerCase();
-        if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(lower)) return false;
+        if (isVoiceGuidanceEcho(lower)) return false;
         return /\b(?:stop|end\s*session|finish|quit)\b|停止療程|停止按摩|停止|結束|结束|完結|停機/.test(lower)
             && !/\bsoft\s+stop\b/.test(lower);
     }
@@ -1310,14 +1391,11 @@
             return;
         }
 
+        if (handleVoiceSetupCancellation(normalized)) return;
+
         if (shouldEnterVoiceMassageSetup(normalized)) {
             enterVoiceMassageSetup();
             applyVoiceMassageSetup(normalized);
-            return;
-        }
-
-        if (isVoiceSetupActive() && isVoiceSetupCancelIntent(normalized)) {
-            cancelVoiceMassageSetup();
             return;
         }
 
@@ -1403,7 +1481,10 @@
                 window.__lastAsrResultAt = Date.now();
                 const text = event.text || event.transcript || '';
                 // Guidance contains command examples; never execute its own echo.
-                if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(text.trim())) return;
+                if (isVoiceGuidanceEcho(text)) return;
+                const hadPreview = !!voiceSetupPreview;
+                clearVoiceSetupPreview();
+                if (hadPreview) updateVoiceSetupPrompt();
                 handleTranscript(text);
             }),
             window.sttService.onPartial?.((event) => {
@@ -1415,17 +1496,20 @@
                     void stopSession('voice_endsession');
                     return;
                 }
-                if (/^(?:please\s+(?:select|confirm)|請選擇|请选择|請確認|请确认)/i.test(text.trim())) return;
+                if (isVoiceGuidanceEcho(text)) return;
+                if (handleVoiceSetupCancellation(text)) return;
                 if (shouldEnterVoiceMassageSetup(text, { allowPartial: true })) {
                     enterVoiceMassageSetup();
-                    return;
                 }
+                previewVoiceMassageSetup(text);
             }),
             window.sttService.onStarted?.(() => {
                 $('asrStatusDot')?.classList.add('active');
                 if (isVoiceSetupActive()) showVoiceSetupBanner();
             }),
             window.sttService.onStopped?.(() => {
+                clearVoiceSetupGuidance();
+                if (isVoiceSetupActive()) updateVoiceSetupPrompt();
                 $('asrStatusDot')?.classList.remove('active');
                 hideVoiceSetupBanner();
             }),
