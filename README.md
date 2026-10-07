@@ -97,6 +97,15 @@ once if the browser requests it. Connect to the pendant IP in Settings, then
 keep the host program PLAYING in PolyScope. RTDE connectivity alone does not
 mean the host program is running.
 
+The dashboard shows a compact robot warning badge to the left of ASR for invalid force readings
+(NaN/Infinity), stale telemetry, controller errors, safety stops, and connection
+failures. Hover for a summary or click the badge for affected force components
+and the next step. Voice
+settings remain selected after a rejected Start, and Stop remains available.
+Health updates run every five seconds; the warning clears when the reported
+problem clears, without automatically starting the robot. Restart the backend
+and reload the browser after updating to enable the full measurement diagnostics.
+
 Voice recognition uses the Cantonese command profile by default, which accepts
 the Cantonese and English commands used by this demo. Settings' Voice Response
 Language controls spoken response audio only; selecting English no longer

@@ -12,8 +12,8 @@ test('year65 quick mode uses a single direct end-session control', () => {
 });
 
 test('year65 page references cache-busted stable runtime scripts', () => {
-  assert.match(html, /src="\/static\/app\.js\?v=119"/);
-  assert.match(html, /src="\/static\/main\.module\.js\?v=101"/);
+  assert.match(html, /src="\/static\/app\.js\?v=121"/);
+  assert.match(html, /src="\/static\/main\.module\.js\?v=102"/);
 });
 
 test('voice language setting describes response audio and ASR shows both languages', () => {

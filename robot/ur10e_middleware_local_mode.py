@@ -640,6 +640,31 @@ class UR10eMiddlewareLocalMode:
                 sleep_s = max(0.0, interval - dt)
                 stop_evt.wait(timeout=sleep_s)
 
+    @staticmethod
+    def _measurement_error(tel: Optional[Telemetry]) -> Optional[Dict[str, Any]]:
+        """Shared read-only diagnostics for motion preflight and the UI."""
+        if tel is None or not math.isfinite(tel.ts) or not 0 <= time.time() - tel.ts <= 2.0:
+            return {
+                "code": "STALE_TELEMETRY",
+                "error": "Fresh robot telemetry is required before motion",
+                "hint": "Check the robot connection. Start and Resume are blocked until fresh readings return.",
+            }
+        if len(tel.ft) != 6 or not all(math.isfinite(value) for value in tel.ft):
+            return {
+                "code": "INVALID_FORCE",
+                "error": "Robot force/torque readings are invalid; motion is blocked",
+                "invalid_components": [name for name, value in zip(("Fx", "Fy", "Fz", "Tx", "Ty", "Tz"), tel.ft)
+                                       if not math.isfinite(value)],
+                "hint": "Check the force sensor and tool configuration in PolyScope before retrying.",
+            }
+        if len(tel.tcp_m) != 6 or not all(math.isfinite(value) for value in tel.tcp_m):
+            return {
+                "code": "INVALID_POSE",
+                "error": "Robot TCP pose is invalid; motion is blocked",
+                "hint": "Check the pendant. Start and Resume are blocked until valid position readings return.",
+            }
+        return None
+
     def get_telemetry(self) -> Dict[str, Any]:
         """UI-friendly dict (safe to JSON serialize)."""
         with self._lock:
@@ -647,12 +672,14 @@ class UR10eMiddlewareLocalMode:
             urs: Dict[str, Any] = self._latest.get("urscript") or {}
             last_error = self._latest.get("error") or self._last_error
             rtde_connected = self.connected and bool(self._latest.get("rtde_connected", False))
+        measurement_error = self._measurement_error(tel)
 
         if not tel:
             return {
                 "ok": False,
                 "error": last_error or "no telemetry yet",
                 "rtde_connected": rtde_connected,
+                "measurement_error": measurement_error,
                 "ts": time.time(),
             }
 
@@ -665,6 +692,7 @@ class UR10eMiddlewareLocalMode:
                 "ok": False,
                 "error": "RTDE TCP pose contains non-finite values",
                 "rtde_connected": rtde_connected,
+                "measurement_error": measurement_error,
                 "ts": time.time(),
             }
         ft = tuple(value if math.isfinite(value) else None for value in tel.ft)
@@ -677,6 +705,7 @@ class UR10eMiddlewareLocalMode:
             "ts": tel.ts,
             "rtde_connected": rtde_connected,
             "error": last_error,
+            "measurement_error": measurement_error,
             "tcp": {
                 "x_m": tcp[0], "y_m": tcp[1], "z_m": tcp[2],
                 "rx_rad": tcp[3], "ry_rad": tcp[4], "rz_rad": tcp[5],
@@ -703,8 +732,9 @@ class UR10eMiddlewareLocalMode:
         """Compatibility snapshot for UI state payload."""
         tel = self.get_telemetry()
         if not tel.get("ok"):
-            return {"ok": False, "error": tel.get("error")}
+            return {"ok": False, "error": tel.get("error"), "measurement_error": tel.get("measurement_error")}
         return {
+            "measurement_error": tel.get("measurement_error"),
             "actual_TCP_pose": [
                 tel["tcp"]["x_m"],
                 tel["tcp"]["y_m"],
@@ -942,17 +972,9 @@ class UR10eMiddlewareLocalMode:
             return {"ok": False, "error": "Robot safety state is unavailable or not ready", "dashboard": dashboard}
         with self._lock:
             telemetry = self._latest.get("telemetry")
-        if telemetry is None or not math.isfinite(telemetry.ts) or not 0 <= time.time() - telemetry.ts <= 2.0:
-            return {"ok": False, "error": "Fresh robot telemetry is required before motion", "dashboard": dashboard}
-        if len(telemetry.ft) != 6 or not all(math.isfinite(value) for value in telemetry.ft):
-            return {
-                "ok": False,
-                "error": "Robot force/torque readings are invalid; motion is blocked",
-                "hint": "Check the force sensor and tool configuration in PolyScope before retrying.",
-                "dashboard": dashboard,
-            }
-        if len(telemetry.tcp_m) != 6 or not all(math.isfinite(value) for value in telemetry.tcp_m):
-            return {"ok": False, "error": "Robot TCP pose is invalid; motion is blocked", "dashboard": dashboard}
+        measurement_error = self._measurement_error(telemetry)
+        if measurement_error:
+            return {"ok": False, **measurement_error, "dashboard": dashboard}
         return {"ok": True, "dashboard": dashboard}
 
     def _arm_host_program(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:

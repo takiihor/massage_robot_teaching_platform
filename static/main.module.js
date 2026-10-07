@@ -3,7 +3,7 @@
 // Load order: i18n → tts-infrastructure → audio_processor → azure_service_monitor →
 //             stt-service → core/* → voice/* → massage/* → ui/* → app.js → main.module.js
 
-import { attachModuleGlobals } from './module-bridge.js?v=1';
+import { attachModuleGlobals } from './module-bridge.js?v=2';
 
 (function () {
     'use strict';
