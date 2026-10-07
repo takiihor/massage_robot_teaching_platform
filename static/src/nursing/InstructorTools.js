@@ -644,7 +644,7 @@ export function initInstructorTools(options) {
         updateExpressionIndicator(currentVitalsMode, preset.id);
         // Trigger immediate UI sync for the main Year65 display
         if (typeof window.syncYear65UI === 'function') {
-            window.syncYear65UI();
+            window.syncYear65UI({ previewTeachingPreset: true });
         }
         if (typeof showToast === 'function') {
             showToast('Preset', `${preset.label} applied`);

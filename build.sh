@@ -21,14 +21,14 @@ Usage: ./build.sh [--skip-playwright] [--with-tests]
 
 Prepare the Massage Robot Teaching Platform after cloning or pulling:
   - create/update Python virtual environment in ./venv
-  - install Python dependencies from requirements.txt
+  - install Python dependencies from requirements.lock.txt when available
   - install Node dependencies from package-lock.json
   - install Playwright Chromium browser unless skipped
   - create .env from .env.example if missing
 
 Options:
   --skip-playwright   Skip browser download for Playwright E2E tests
-  --with-tests        Run npm test after installing dependencies
+  --with-tests        Run JavaScript, scenario, and Python tests after setup
 HELP
       exit 0
       ;;
@@ -65,7 +65,11 @@ fi
 # shellcheck source=/dev/null
 source venv/bin/activate
 python -m pip install --upgrade pip wheel
-python -m pip install -r requirements.txt
+DEPENDENCY_FILE=requirements.txt
+if [[ -f requirements.lock.txt ]]; then
+  DEPENDENCY_FILE=requirements.lock.txt
+fi
+python -m pip install -r "$DEPENDENCY_FILE"
 
 if [[ -f package-lock.json ]]; then
   npm ci
@@ -84,6 +88,7 @@ fi
 
 if [[ "$RUN_TESTS" -eq 1 ]]; then
   npm test
+  AUTO_CONNECT_RTDE=0 ENABLE_AZURE_SPEECH_STT=false python -m unittest discover -s tests -p 'test_*.py' -v
 fi
 
 cat <<'DONE'

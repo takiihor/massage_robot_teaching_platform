@@ -94,11 +94,14 @@ class AzureSpeechProvider extends STTProvider {
         this.expectedStop = false;
         this.providerErrorReported = false;
         this.audioSuspended = false;
+        this.startGeneration = 0;
     }
 
     async checkAvailability() {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
         try {
-            const response = await fetch('/api/stt/status');
+            const response = await fetch('/api/stt/status', { signal: controller.signal });
             if (!response.ok) {
                 if (!_sttStatusWarnedOnce) {
                     _sttStatusWarnedOnce = true;
@@ -119,11 +122,14 @@ class AzureSpeechProvider extends STTProvider {
             }
             this.isAvailable = false;
             return false;
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
     async start(language = 'zh-HK') {
         if (this.isListening) return;
+        const generation = ++this.startGeneration;
 
         try {
             this.expectedStop = false;
@@ -140,9 +146,11 @@ class AzureSpeechProvider extends STTProvider {
             }
             // Connect WebSocket
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/stt/stream`);
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/stt/stream`);
+            this.ws = ws;
 
             this.ws.onopen = () => {
+                if (this.ws !== ws) return;
                 console.log('🎤 Azure Speech WebSocket connected');
                 this.reconnectAttempts = 0;
                 // Send config
@@ -153,16 +161,22 @@ class AzureSpeechProvider extends STTProvider {
             };
 
             this.ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                this._handleMessage(msg);
+                if (this.ws !== ws) return;
+                try {
+                    this._handleMessage(JSON.parse(event.data));
+                } catch (error) {
+                    this._reportProviderError(`Invalid recognition message: ${error.message}`);
+                }
             };
 
             this.ws.onerror = (error) => {
+                if (this.ws !== ws) return;
                 console.error('Azure Speech WebSocket error:', error);
                 this._reportProviderError('WebSocket error');
             };
 
             this.ws.onclose = () => {
+                if (this.ws !== ws) return;
                 console.log('Azure Speech WebSocket closed');
                 const closedUnexpectedly = this.isListening && !this.expectedStop;
                 this.isListening = false;
@@ -175,7 +189,7 @@ class AzureSpeechProvider extends STTProvider {
             // Warm the recognizer while microphone permission/device setup is
             // pending, instead of paying the connection handshake afterwards.
             // Get microphone stream
-            this.stream = await navigator.mediaDevices.getUserMedia({
+            const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
                     sampleRate: 16000,
@@ -183,6 +197,11 @@ class AzureSpeechProvider extends STTProvider {
                     noiseSuppression: true
                 }
             });
+            if (generation !== this.startGeneration || this.expectedStop) {
+                stream.getTracks().forEach(track => track.stop());
+                return;
+            }
+            this.stream = stream;
 
             if (!this.ws || this.ws.readyState >= WebSocket.CLOSING || this.providerErrorReported) {
                 throw new Error('Azure Speech connection failed during microphone startup');
@@ -190,9 +209,11 @@ class AzureSpeechProvider extends STTProvider {
 
             // Setup audio processing
             await this._setupAudioProcessing();
+            if (generation !== this.startGeneration || this.expectedStop) return;
             this.isListening = true;
 
         } catch (e) {
+            if (generation !== this.startGeneration) return;
             console.error('Azure Speech start failed:', e);
             this.expectedStop = true;
             this._cleanup();
@@ -398,8 +419,7 @@ class AzureSpeechProvider extends STTProvider {
     }
 
     async stop() {
-        if (!this.isListening) return;
-
+        this.startGeneration++;
         this.isListening = false;
         this.expectedStop = true;
 
@@ -422,7 +442,7 @@ class AzureSpeechProvider extends STTProvider {
             this.source = null;
         }
         if (this.audioContext) {
-            this.audioContext.close();
+            this.audioContext.close()?.catch?.(() => {});
             this.audioContext = null;
         }
         if (this.stream) {
@@ -430,8 +450,10 @@ class AzureSpeechProvider extends STTProvider {
             this.stream = null;
         }
         if (this.ws) {
-            this.ws.close();
+            const ws = this.ws;
             this.ws = null;
+            ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+            ws.close();
         }
     }
 }
@@ -595,6 +617,7 @@ class BrowserSTTProvider extends STTProvider {
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
+        const recognition = this.recognition;
 
         this.recognition.lang = language;
         this.recognition.continuous = true;
@@ -602,6 +625,7 @@ class BrowserSTTProvider extends STTProvider {
         this.recognition.maxAlternatives = 3;
 
         this.recognition.onresult = (event) => {
+            if (this.recognition !== recognition || !this.isListening) return;
             // A single event may finalize one phrase and contain the next interim.
             // Deliver all changed results so completed commands are not lost.
             for (let resultIndex = event.resultIndex ?? 0; resultIndex < event.results.length; resultIndex++) {
@@ -640,6 +664,7 @@ class BrowserSTTProvider extends STTProvider {
         };
 
         this.recognition.onerror = (event) => {
+            if (this.recognition !== recognition || !this.isListening) return;
             console.error('Browser STT error:', event.error);
 
             // Don't report certain errors
@@ -657,7 +682,7 @@ class BrowserSTTProvider extends STTProvider {
 
         this.recognition.onend = () => {
             // Auto-restart if still listening
-            if (this.isListening) {
+            if (this.recognition === recognition && this.isListening) {
                 try {
                     this.recognition.start();
                 } catch (e) {
@@ -677,8 +702,9 @@ class BrowserSTTProvider extends STTProvider {
         this.isListening = false;
 
         if (this.recognition) {
-            this.recognition.stop();
+            const recognition = this.recognition;
             this.recognition = null;
+            recognition.stop();
         }
     }
 }
@@ -692,6 +718,9 @@ class STTService {
         this.fallbackChain = ['azure-speech-sdk', 'browser'];
         this.isListening = false;
         this.language = 'zh-HK';
+        this.startGeneration = 0;
+        this.startPromise = null;
+        this.fallbackPromise = null;
 
         // Statistics
         this.stats = {
@@ -773,6 +802,17 @@ class STTService {
     }
 
     async start(language = null) {
+        if (this.startPromise) return this.startPromise;
+        const pending = this._start(language, this.startGeneration);
+        this.startPromise = pending;
+        try {
+            return await pending;
+        } finally {
+            if (this.startPromise === pending) this.startPromise = null;
+        }
+    }
+
+    async _start(language, generation) {
         if (this.isListening) {
             console.warn('STT already listening');
             return;
@@ -785,6 +825,7 @@ class STTService {
         if (!this.currentProvider) {
             await this.initialize();
         }
+        if (generation !== this.startGeneration) return;
 
         if (!this.currentProvider) {
             throw new Error('No STT providers available');
@@ -797,6 +838,7 @@ class STTService {
 
         try {
             await provider.start(this.language);
+            if (generation !== this.startGeneration) return;
             this.isListening = true;
             this.stats.totalRequests++;
 
@@ -807,6 +849,7 @@ class STTService {
 
             console.log(`🎤 STT started with ${this.currentProvider}`);
         } catch (e) {
+            if (generation !== this.startGeneration) return;
             console.error(`Failed to start ${this.currentProvider}:`, e);
             const fallbackStarted = await this._switchToFallback(e);
             if (!fallbackStarted) {
@@ -816,9 +859,10 @@ class STTService {
     }
 
     async stop() {
-        if (!this.isListening) return;
+        this.startGeneration++;
 
         const provider = this.providers.get(this.currentProvider);
+        this.startPromise = null;
         if (provider) {
             await provider.stop();
         }
@@ -829,10 +873,12 @@ class STTService {
     }
 
     async _switchToFallback(initialError = null) {
+        const generation = this.startGeneration;
         const currentIndex = this.fallbackChain.indexOf(this.currentProvider);
         let lastError = initialError;
 
         for (let i = currentIndex + 1; i < this.fallbackChain.length; i++) {
+            if (generation !== this.startGeneration) return false;
             const nextProvider = this.fallbackChain[i];
             const provider = this.providers.get(nextProvider);
 
@@ -844,6 +890,7 @@ class STTService {
                 if (currentProviderObj) {
                     await currentProviderObj.stop();
                 }
+                if (generation !== this.startGeneration) return false;
 
                 // Start new
                 this.currentProvider = nextProvider;
@@ -851,6 +898,7 @@ class STTService {
 
                 try {
                     await provider.start(this.language);
+                    if (generation !== this.startGeneration) return false;
                     this.isListening = true;
 
                     this.eventBus.emit('provider-switched', {
@@ -870,6 +918,7 @@ class STTService {
         }
 
         // All providers failed
+        if (generation !== this.startGeneration) return false;
         // Tear down the last provider too: otherwise browser recognition keeps
         // auto-restarting and Azure can keep a microphone/socket open even
         // though the service reports stopped. A later Start must be fresh.
@@ -890,9 +939,14 @@ class STTService {
     }
 
     async _handleProviderError(providerName, error) {
-        if (providerName === this.currentProvider && this.isListening) {
+        if (providerName === this.currentProvider && this.isListening && !this.fallbackPromise) {
             console.warn(`Current provider ${providerName} error, attempting fallback...`);
-            await this._switchToFallback(error);
+            this.fallbackPromise = this._switchToFallback(error);
+            try {
+                await this.fallbackPromise;
+            } finally {
+                this.fallbackPromise = null;
+            }
         }
     }
 

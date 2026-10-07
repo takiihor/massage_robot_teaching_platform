@@ -11,10 +11,11 @@ IN_SPEED_X100 = 19   # optional speed scaling (not mandatory)
 IN_FORCE_X10 = 20   # target contact force in N*10 (e.g. 25=2.5N, 50=5N, 80=8N)
 IN_DURATION_S = 21   # duration in seconds
 IN_CMD_SEQ = 22
+IN_HEARTBEAT = 21 # double register; backend increments every 250ms
  # IN_FORCE_ENABLE register not used here (RTDE IO supports only 18-22)
 
 OUT_STATE = 12 # 0=IDLE, 1=RUNNING, 2=PAUSED, 3=RETURNING_HOME
-OUT_ERROR_CODE = 13 # 0=OK, 1=Unknown cmd, 2=Overforce stop
+OUT_ERROR_CODE = 13 # 0=OK, 1=Unknown, 2=Force, 3=Unarmed, 4=Duration, 5=Heartbeat
 OUT_CURRENT_MODE = 14
 OUT_PROGRESS = 15
 OUT_ACK_SEQ = 16
@@ -35,9 +36,13 @@ CMD_HOME_ROTATION = 8
 ERR_OK = 0
 ERR_UNKNOWN_CMD = 1
 ERR_OVERFORCE = 2
+ERR_NOT_ARMED = 3
+ERR_DURATION = 4
+ERR_HEARTBEAT = 5
+HEARTBEAT_TIMEOUT_S = 3.0
 
 # ---------------------------
-# Motion parameters (SAFE & SLOW)
+# Motion parameters (validate with the installed tool and workspace)
 # ---------------------------
 A_SLOW = 0.40
 V_SLOW = 0.3
@@ -62,9 +67,8 @@ MOVE_STEPS_YZ = 1
 # ---------------------------
 # Force control parameters
 # ---------------------------
-FZ_HARD_LIMIT = 25.0      # N, emergency stop threshold (positive when pressing calf)
-FORCE_Z_DEV = 0.10      # meters, allowed Z deviation in force_mode (0.10m = +/-100mm)
-# NOTE: recommended safer start: 0.01~0.02 (+/-10~20mm)
+FZ_HARD_LIMIT = 25.0      # N, force-vector magnitude guard; not a certified safety limit
+FORCE_Z_SPEED_MPS = 0.10 # compliant-axis speed limit in m/s; not a travel-distance limit
 
 # ============================================================
 # Helpers
@@ -105,12 +109,21 @@ def cancel_blocking_action():
 end
 
 def set_outputs(state, mode, prog, ack, err):
+  # Repeated progress updates for the same sequence must not erase a command
+  # rejection before the backend can observe its ACK.
+  if ack != output_seq:
+    global output_seq = ack
+    global output_error = err
+  elif err != ERR_OK:
+    global output_error = err
+  end
   write_output_integer_register(OUT_STATE, state)
   write_output_integer_register(OUT_CURRENT_MODE, mode)
   write_output_integer_register(OUT_PROGRESS, prog)
-  write_output_integer_register(OUT_ACK_SEQ, ack)
-  write_output_integer_register(OUT_ERROR_CODE, err)
+  write_output_integer_register(OUT_ERROR_CODE, output_error)
   write_output_integer_register(OUT_CAL_STATUS, 0)
+  # Publish ACK last so it cannot confirm stale state/error fields.
+  write_output_integer_register(OUT_ACK_SEQ, ack)
 end
 
 def stop_motion():
@@ -122,12 +135,49 @@ def end_force_safe():
   end_force_mode()
 end
 
+def force_limit_exceeded(force_sample):
+  # Validate each force component before arithmetic. Reject invalid samples
+  # and values already beyond the limit without squaring them (overflow).
+  local fx = force_sample[0]
+  local fy = force_sample[1]
+  local fz = force_sample[2]
+  if (fx != fx) or (fy != fy) or (fz != fz):
+    return True
+  end
+  if (fx > FZ_HARD_LIMIT) or (fx < -FZ_HARD_LIMIT):
+    return True
+  end
+  if (fy > FZ_HARD_LIMIT) or (fy < -FZ_HARD_LIMIT):
+    return True
+  end
+  if (fz > FZ_HARD_LIMIT) or (fz < -FZ_HARD_LIMIT):
+    return True
+  end
+  # Compare squared magnitude with squared limit; no square root is needed.
+  # Keep products and additions separate for unambiguous controller arithmetic.
+  local fx_sq = fx * fx
+  local fy_sq = fy * fy
+  local fz_sq = fz * fz
+  local force_sq = fx_sq + fy_sq
+  force_sq = force_sq + fz_sq
+  local limit_sq = FZ_HARD_LIMIT * FZ_HARD_LIMIT
+  return (force_sq != force_sq) or (force_sq < 0.0) or (force_sq > limit_sq)
+end
+
 def overforce_check_and_stop():
-  f = get_tcp_force()
-  fz = f[2]
-  if fz > FZ_HARD_LIMIT:
+  local force_sample = get_tcp_force()
+  # Force can point along any base-frame axis when the TCP is rotated.
+  if force_limit_exceeded(force_sample):
+    cancel_blocking_action()
     end_force_safe()
     stop_motion()
+    rg2_open_only()
+    global active_mode = 0
+    global paused_mode = 0
+    global return_home_pending = False
+    global system_armed = False
+    global safety_fault_latched = True
+    set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OVERFORCE)
     return True
   end
   return False
@@ -137,9 +187,8 @@ def apply_force_mode_z(task_frame, fz_target):
   # Z-only compliant, keep others stiff
   sel = [0, 0, 1, 0, 0, 0]
   wrench = [0, 0, fz_target, 0, 0, 0]   # Fz positive (you confirmed contact force is positive)
-  # limits: [x,y,z,rx,ry,rz] max deviation / speed constraints under force mode
-  # We only allow Z to move (+/-FORCE_Z_DEV), others 0
-  lim = [0.0, 0.0, FORCE_Z_DEV, 0.0, 0.0, 0.0]
+  # Compliant Z uses a speed limit; other axes use deviation limits.
+  lim = [0.0, 0.0, FORCE_Z_SPEED_MPS, 0.0, 0.0, 0.0]
 
   # type=2 commonly used in examples for "force frame/task frame" behavior.
   # If you observe direction reversed, change type to 1 or flip wrench sign.
@@ -175,7 +224,10 @@ def request_stop():
   global active_mode = 0
   global paused_mode = 0
   # duration=-1 is a connection/arming STOP: never initiate travel.
-  global return_home_pending = read_input_integer_register(IN_DURATION_S) != -1
+  global return_home_pending = (read_input_integer_register(IN_DURATION_S) != -1) and (not safety_fault_latched)
+  if read_input_integer_register(IN_DURATION_S) == -1:
+    global safety_fault_latched = False
+  end
   if return_home_pending:
     set_outputs(STATE_RETURNING_HOME, 0, 0, last_seq, ERR_OK)
   else:
@@ -213,7 +265,38 @@ def return_home():
   set_outputs(STATE_IDLE, 0, 100, last_seq, ERR_OK)
 end
 
+def check_session_safety(prog):
+  # Poll these while movel/rg_grip workers are blocked as well as between legs.
+  if (active_mode > 0) or (paused_mode > 0) or return_home_pending:
+    if heartbeat_elapsed_s >= HEARTBEAT_TIMEOUT_S:
+      cancel_blocking_action()
+      end_force_safe()
+      stop_motion()
+      rg2_open_only()
+      global active_mode = 0
+      global paused_mode = 0
+      global return_home_pending = False
+      global system_armed = False
+      global safety_fault_latched = True
+      set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_HEARTBEAT)
+      return 3
+    end
+    if overforce_check_and_stop():
+      return 3
+    end
+  end
+  if (active_mode > 0) and (session_duration_s > 0) and (session_elapsed_s >= session_duration_s):
+    request_stop()
+    return 1
+  end
+  return 0
+end
+
 def check_stop_or_pause(prog):
+  safety_result = check_session_safety(prog)
+  if safety_result > 0:
+    return safety_result
+  end
   live_cmd = read_input_integer_register(IN_CMD)
   live_seq = read_input_integer_register(IN_CMD_SEQ)
   if live_seq != last_seq:
@@ -235,6 +318,10 @@ def check_stop_or_pause(prog):
       global active_mode = 0
       set_outputs(STATE_PAUSED, paused_mode, prog, last_seq, ERR_OK)
       return 2
+    else:
+      # Only STOP/PAUSE are supported during an active blocking action.
+      # Report a rejection without replacing the current movement.
+      set_outputs(STATE_RUNNING, active_mode, prog, last_seq, ERR_UNKNOWN_CMD)
     end
   end
   return 0
@@ -361,14 +448,40 @@ end
 # ============================================================
 
 active_mode = 0
+output_seq = -1
+output_error = ERR_OK
 paused_mode = 0
 last_seq = -1
 last_force_x10 = 0
 system_armed = False
+safety_fault_latched = False
 return_home_pending = False
 # Backend replaces this standalone fallback with its startup pose.
 home_pose = get_actual_tcp_pose()
 home_xyz = p[0, 0, 0, 0, 0, 0]
+session_duration_s = 0
+session_elapsed_s = 0.0
+heartbeat_elapsed_s = 0.0
+last_heartbeat = read_input_float_register(IN_HEARTBEAT)
+
+# Controller time advances independently of blocking arm/gripper calls and the
+# browser's timer. Paused time does not consume the selected session duration.
+thread session_clock():
+  while True:
+    if active_mode > 0:
+      global session_elapsed_s = session_elapsed_s + get_steptime()
+    end
+    heartbeat = read_input_float_register(IN_HEARTBEAT)
+    if heartbeat != last_heartbeat:
+      global last_heartbeat = heartbeat
+      global heartbeat_elapsed_s = 0.0
+    else:
+      global heartbeat_elapsed_s = heartbeat_elapsed_s + get_steptime()
+    end
+    sync()
+  end
+end
+session_clock_handle = run session_clock()
 
 # Safety bootstrapping:
 # - Latch current seq at startup so stale pre-existing cmd/seq is not replayed.
@@ -378,6 +491,7 @@ set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
 
 while True:
 
+  check_session_safety(0)
   cmd = read_input_integer_register(IN_CMD)
   seq = read_input_integer_register(IN_CMD_SEQ)
 
@@ -403,7 +517,7 @@ while True:
       else:
         active_mode = 0
         paused_mode = 0
-        set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OK)
+        set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_NOT_ARMED)
       end
     else:
       if cmd == 0:
@@ -412,9 +526,21 @@ while True:
 
       elif (cmd >= 1) and (cmd <= 4):
         # START / RESUME-AS-NEW: start massage (all modes map to mode 4)
-        active_mode = 4
-        paused_mode = 0
-        set_outputs(STATE_RUNNING, active_mode, 0, last_seq, ERR_OK)
+        session_duration_s = read_input_integer_register(IN_DURATION_S)
+        session_elapsed_s = 0.0
+        if (session_duration_s <= 0) or (session_duration_s > 1800):
+          active_mode = 0
+          paused_mode = 0
+          set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_DURATION)
+        elif heartbeat_elapsed_s >= HEARTBEAT_TIMEOUT_S:
+          active_mode = 0
+          paused_mode = 0
+          set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_HEARTBEAT)
+        else:
+          active_mode = 4
+          paused_mode = 0
+          set_outputs(STATE_RUNNING, active_mode, 0, last_seq, ERR_OK)
+        end
 
       elif cmd == 5:
         # PAUSE: stop motion, save active mode so Resume can restore it

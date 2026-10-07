@@ -5,11 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 ENV_PORT=""
+ENV_HOST=""
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
   ENV_PORT="$(sed -n 's/^PORT=//p' "$SCRIPT_DIR/.env" | tail -1)"
+  ENV_HOST="$(sed -n 's/^HOST=//p' "$SCRIPT_DIR/.env" | tail -1)"
 fi
 PORT="${PORT:-${ENV_PORT:-5033}}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-${ENV_HOST:-127.0.0.1}}"
 PIDFILE="$SCRIPT_DIR/massage_robot.pid"
 LOGFILE="$SCRIPT_DIR/server.log"
 

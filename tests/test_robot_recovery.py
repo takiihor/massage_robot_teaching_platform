@@ -32,6 +32,7 @@ class RobotRecoveryTest(unittest.TestCase):
                                          sleep=self.clock.sleep)
         self.clock_patch.start()
         self.addCleanup(self.clock_patch.stop)
+        self.addCleanup(self.robot.disconnect)
 
     def registers(self, seq, state=0, error=0):
         return dict(ok=True, ack_seq=seq, state=state, error_code=error)
@@ -70,7 +71,7 @@ class RobotRecoveryTest(unittest.TestCase):
         self.robot.read_urscript_registers = Mock()
         self.assertFalse(self.robot.stop_massage()['ok'])
         self.robot.send_mode.assert_called_once()
-        self.robot.read_urscript_registers.assert_not_called()
+        self.robot.read_urscript_registers.assert_called_once()
 
     def test_failed_fallback_write_is_reported(self):
         self.robot.send_mode = Mock(side_effect=[dict(ok=True, seq=7),
@@ -151,15 +152,33 @@ class RobotRecoveryTest(unittest.TestCase):
         io = Mock()
         self.robot._create_rtde_receive = Mock(return_value=receive)
         self.robot._resync_sequence_from_robot = Mock()
-        self.robot._neutralize_motion_on_connect = Mock()
+        self.robot._neutralize_motion_on_connect = Mock(return_value=dict(ok=True))
         with patch.object(middleware.socket, 'create_connection'), patch.dict(sys.modules, {
                 'rtde_receive': SimpleNamespace(RTDEReceiveInterface=Mock()),
                 'rtde_io': SimpleNamespace(RTDEIOInterface=Mock(return_value=io))}):
             self.robot._maybe_reconnect()
         self.assertTrue(self.robot.connected)
+        self.assertEqual(self.robot.neutralized_connection_id, self.robot.connection_id)
         self.robot._resync_sequence_from_robot.assert_called_once()
         self.robot._neutralize_motion_on_connect.assert_called_once()
         self.robot._restore_speed_slider.assert_not_called()
+
+    def test_reconnect_without_stop_ack_cannot_claim_neutralized_connection(self):
+        receive = Mock()
+        receive.getActualTCPPose.return_value = [0.3, 0.1, 0.35, 3.14, 0, 0]
+        self.robot._create_rtde_receive = Mock(return_value=receive)
+        self.robot._resync_sequence_from_robot = Mock()
+        self.robot._neutralize_motion_on_connect = Mock(return_value=dict(ok=False))
+        self.robot._capture_home_pose = Mock()
+        self.robot._upload_home_pose = Mock()
+        with patch.object(middleware.socket, 'create_connection'), patch.dict(sys.modules, {
+                'rtde_receive': SimpleNamespace(RTDEReceiveInterface=Mock()),
+                'rtde_io': SimpleNamespace(RTDEIOInterface=Mock(return_value=Mock()))}):
+            self.robot._maybe_reconnect()
+        self.assertTrue(self.robot.connected, 'RTDE connectivity alone is not motion confirmation')
+        self.assertIsNone(self.robot.neutralized_connection_id)
+        self.robot._capture_home_pose.assert_not_called()
+        self.robot._upload_home_pose.assert_not_called()
 
 
 class StopPreemptionTest(unittest.TestCase):

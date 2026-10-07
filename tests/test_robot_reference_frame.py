@@ -36,7 +36,7 @@ def python_block(source):
         line = re.sub(r'\brun (\w+)\(\)', r'_run_thread(\1)', line)
         line = re.sub(r'^kill (.+)$', r'_kill_thread(\1)', line)
         line = re.sub(r'^join (.+)$', r'_join_thread(\1)', line)
-        assignment = re.match(r'^global (\w+) = (.*)$', line)
+        assignment = re.match(r'^(?:global|local) (\w+) = (.*)$', line)
         if assignment:
             line = assignment[1] + ' = ' + assignment[2]
         lines.append('    ' * depth + line)

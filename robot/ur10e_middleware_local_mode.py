@@ -31,6 +31,7 @@ import json
 import math
 import logging
 import threading
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
@@ -64,6 +65,8 @@ UR_SCRIPT_ERROR_TEXT = {
     1: "unknown command",
     2: "overforce stop",
     3: "host program is not armed",
+    4: "invalid session duration",
+    5: "backend heartbeat lost",
 }
 
 # Optional input float registers used by your URScript for calibration points
@@ -79,6 +82,7 @@ IN_POSE_RZ = 29
 CMD_HOME_XYZ = 7
 CMD_HOME_ROTATION = 8
 IN_HOME_REGISTERS = (18, 19, 20)
+IN_HEARTBEAT = 21  # double register; independent of integer duration register 21
 STATE_RETURNING_HOME = 3
 
 CMD_SAVE_POINT_A = 10
@@ -218,11 +222,16 @@ class UR10eMiddlewareLocalMode:
         self._send_mode_lock = threading.Lock()
         self._stop_generation = 0
         self._home_pose: Optional[List[float]] = None
+        self._home_ip: Optional[str] = None
+        self._connection_lock = threading.RLock()
 
         self._stop_evt = threading.Event()
         self._telemetry_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
         self._latest: Dict[str, Any] = {}
         self.connected = False
+        self.connection_id = 0
+        self.neutralized_connection_id = None
         saved = self._load_calibration_from_file()
         if saved:
             self._cal_point_a_pose = saved.get("point_a_pose") or None
@@ -232,12 +241,25 @@ class UR10eMiddlewareLocalMode:
     # Connection lifecycle
     # --------------------------
     def connect(self, ip: Optional[str] = None) -> None:
+        with self._connection_lock:
+            if self.rtde_io:
+                stopped = self.stop_massage(return_home=False)
+                if not stopped.get("ok"):
+                    raise RuntimeError("Cannot replace connection before robot Stop is confirmed")
+            try:
+                self._connect(ip)
+            except Exception:
+                self._reset_connections()
+                raise
+
+    def _connect(self, ip: Optional[str] = None) -> None:
         # Disconnect any existing connection first to avoid register conflicts
         if self.connected or self.rtde_r or self.rtde_io:
             self.disconnect()
 
         ip = ip or self.default_ip
         self._ip = ip
+        self._stop_evt = threading.Event()
 
         # Import here so the file can be imported even when ur_rtde isn't installed.
         try:
@@ -259,31 +281,65 @@ class UR10eMiddlewareLocalMode:
             self.rtde_r = None
             raise
         self.dashboard = DashboardClient(ip, timeout=self.dashboard_timeout)
-        self.connected = True
+        if self._stop_evt.is_set():
+            raise RuntimeError("Robot connection cancelled by disconnect")
         self._last_error = None
         self._last_error_ts = None
-        self._restore_speed_slider()
         self._write_force_enable(False)
         self._resync_sequence_from_robot()
-        self._capture_home_pose()
         neutralized = self._neutralize_motion_on_connect()
-        if neutralized.get("ok"):
+        if neutralized.get("ok") and not neutralized.get("return_home_pending"):
+            self._capture_home_pose()
             uploaded = self._upload_home_pose()
             if not uploaded.get("ok"):
                 logger.warning("Startup home upload pending: %s", uploaded.get("error"))
 
-        self._stop_evt.clear()
-        self._telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
+        # An old thread may still be inside a Dashboard socket call. Never
+        # clear its cancellation event when creating a replacement connection.
+        if self._stop_evt.is_set():
+            raise RuntimeError("Robot connection cancelled by disconnect")
+        self.connected = True
+        self.connection_id += 1
+        self.neutralized_connection_id = self.connection_id if neutralized.get("ok") and not neutralized.get("return_home_pending") else None
+        self._telemetry_thread = threading.Thread(target=self._telemetry_loop, args=(self._stop_evt,), daemon=True)
+        self._start_heartbeat()
         self._telemetry_thread.start()
+
+    def _start_heartbeat(self) -> None:
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop,
+            args=(self._stop_evt, self.rtde_io), daemon=True)
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self, stop_evt, io) -> None:
+        counter = 0
+        while not stop_evt.is_set():
+            try:
+                # A disconnected native IO setter may attempt a blocking
+                # reconnect. Leave recovery to the probed reconnect path.
+                if hasattr(io, "isConnected") and not io.isConnected():
+                    return
+                with self._send_mode_lock:
+                    if stop_evt.is_set() or io is not self.rtde_io:
+                        return
+                    counter = (counter + 1) % 2_000_000_000
+                    if io.setInputDoubleRegister(IN_HEARTBEAT, float(counter)) is False:
+                        raise ConnectionError("Heartbeat write failed")
+            except Exception as exc:
+                if not stop_evt.is_set():
+                    self.connected = False
+                    self._mark_error(f"Robot heartbeat failed: {exc}")
+                return
+            stop_evt.wait(0.25)
 
     def _capture_home_pose(self) -> None:
         """Latch the first connected pose for this backend process, never on reconnect."""
-        if self._home_pose is not None:
+        if self._home_pose is not None and self._home_ip == self._ip:
             return
         pose = list(self.rtde_r.getActualTCPPose())
         if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
             raise RuntimeError("Robot startup TCP pose is invalid")
         self._home_pose = pose
+        self._home_ip = self._ip
         logger.info("Captured backend startup home pose: %s", pose)
 
     def _upload_home_pose(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
@@ -306,11 +362,10 @@ class UR10eMiddlewareLocalMode:
             return {"ok": False, "error": "rtde_io not connected"}
         try:
             seq = self._next_seq()
-            self.rtde_io.setInputIntRegister(IN_SPEED_X100, int(self._speed_scale_x100))
-            self.rtde_io.setInputIntRegister(IN_FORCE_X10, 0)
-            self.rtde_io.setInputIntRegister(IN_DURATION_S, -1)
-            self.rtde_io.setInputIntRegister(IN_CMD, 0)
-            self.rtde_io.setInputIntRegister(IN_CMD_SEQ, int(seq))
+            for register, value in ((IN_SPEED_X100, self._speed_scale_x100),
+                                    (IN_FORCE_X10, 0), (IN_DURATION_S, -1),
+                                    (IN_CMD, 0), (IN_CMD_SEQ, seq)):
+                self._write_int_register(register, int(value))
             logger.info("connect: sent startup STOP neutralization seq=%d", seq)
             return self._wait_for_stop_ack(seq, 0.4)
         except Exception:
@@ -372,24 +427,14 @@ class UR10eMiddlewareLocalMode:
 
     def disconnect(self) -> None:
         self._stop_evt.set()
-        if self._telemetry_thread:
-            self._telemetry_thread.join(timeout=1.0)
-            self._telemetry_thread = None
-
-        # ur_rtde interfaces have disconnect() in some versions; safe-guard
-        for obj_name in ("rtde_io", "rtde_r"):
-            obj = getattr(self, obj_name, None)
-            if obj:
-                try:
-                    if hasattr(obj, "disconnect"):
-                        obj.disconnect()
-                except Exception:
-                    logger.exception("Failed to disconnect %s", obj_name)
-
-        self.rtde_r = None
-        self.rtde_io = None
-        self.dashboard = None
-        self.connected = False
+        with self._connection_lock:
+            if self._telemetry_thread:
+                self._telemetry_thread.join(timeout=1.0)
+                self._telemetry_thread = None
+            if self._heartbeat_thread:
+                self._heartbeat_thread.join(timeout=1.0)
+                self._heartbeat_thread = None
+            self._reset_connections()
 
     # --------------------------
     # Telemetry
@@ -403,20 +448,36 @@ class UR10eMiddlewareLocalMode:
         self._last_error_ts = None
 
     def _reset_connections(self) -> None:
-        for obj_name in ("rtde_io", "rtde_r"):
-            obj = getattr(self, obj_name, None)
+        with self._send_mode_lock:
+            # Operations begun on the old transport must never publish a
+            # late Start/Resume through a replacement connection.
+            self._stop_generation += 1
+            interfaces = [(name, getattr(self, name, None)) for name in ("rtde_io", "rtde_r")]
+            self.rtde_r = None
+            self.rtde_io = None
+            self.dashboard = None
+            self.connected = False
+            self.neutralized_connection_id = None
+        for obj_name, obj in interfaces:
             if obj:
                 try:
                     if hasattr(obj, "disconnect"):
                         obj.disconnect()
                 except Exception:
                     logger.exception("Failed to disconnect %s during reset", obj_name)
-        self.rtde_r = None
-        self.rtde_io = None
-        self.dashboard = None
-        self.connected = False
+        with self._lock:
+            self._latest = {}
 
     def _maybe_reconnect(self) -> None:
+        # Explicit connection changes take precedence over background recovery.
+        if not self._connection_lock.acquire(blocking=False):
+            return
+        try:
+            self._reconnect()
+        finally:
+            self._connection_lock.release()
+
+    def _reconnect(self) -> None:
         if not self._ip or self._stop_evt.is_set():
             return
         now = time.time()
@@ -446,14 +507,24 @@ class UR10eMiddlewareLocalMode:
             self.rtde_r = self._create_rtde_receive(RTDEReceive, self._ip)
             self.rtde_io = RTDEIO(self._ip)
             self.dashboard = DashboardClient(self._ip, timeout=self.dashboard_timeout)
-            self.connected = True
+            if self._stop_evt.is_set():
+                self._reset_connections()
+                return
+            self._start_heartbeat()
             self._resync_sequence_from_robot()
-            self._capture_home_pose()
             neutralized = self._neutralize_motion_on_connect()
-            if neutralized.get("ok"):
+            if neutralized.get("ok") and not neutralized.get("return_home_pending"):
+                self._capture_home_pose()
                 self._upload_home_pose()
+            if self._stop_evt.is_set():
+                self._reset_connections()
+                return
+            self.connected = True
+            self.connection_id += 1
+            self.neutralized_connection_id = self.connection_id if neutralized.get("ok") and not neutralized.get("return_home_pending") else None
             self._clear_error()
         except Exception as exc:
+            self._reset_connections()
             self._mark_error(f"reconnect failed: {exc}")
 
     @staticmethod
@@ -483,12 +554,13 @@ class UR10eMiddlewareLocalMode:
         yaw = math.atan2(r10, r00)
         return roll, pitch, yaw
 
-    def _telemetry_loop(self) -> None:
+    def _telemetry_loop(self, stop_evt=None) -> None:
+        stop_evt = stop_evt or self._stop_evt
         interval = 1.0 / float(self.telemetry_hz)
         dashboard_poll_s = max(0.5, float(os.getenv("UR10E_DASHBOARD_POLL_S", "1.0")))
         last_dashboard_poll = 0.0
         dashboard_snapshot = {"program_state": None, "robot_mode": None, "safety_status": None}
-        while not self._stop_evt.is_set():
+        while not stop_evt.is_set():
             t0 = time.time()
             try:
                 if not self.rtde_r:
@@ -497,6 +569,13 @@ class UR10eMiddlewareLocalMode:
                     self._maybe_reconnect()
                     time.sleep(interval)
                     continue
+                if not self.connected:
+                    self._maybe_reconnect()
+                    continue
+
+                for interface in (self.rtde_r, self.rtde_io):
+                    if interface is None or (hasattr(interface, "isConnected") and not interface.isConnected()):
+                        raise ConnectionError("RTDE transport disconnected")
 
                 tcp = self.rtde_r.getActualTCPPose()          # [x,y,z,Rx,Ry,Rz]
                 ft = self.rtde_r.getActualTCPForce()          # [Fx,Fy,Fz,Tx,Ty,Tz]
@@ -535,6 +614,9 @@ class UR10eMiddlewareLocalMode:
                 # Also store URScript register state if available (helpful for UI status)
                 urs = self.read_urscript_registers()
 
+                if stop_evt.is_set():
+                    return
+
                 with self._lock:
                     self._latest = {
                         "telemetry": tel,
@@ -544,6 +626,8 @@ class UR10eMiddlewareLocalMode:
                     }
                 self._clear_error()
             except Exception:
+                if stop_evt.is_set():
+                    return
                 logger.exception("Telemetry loop error")
                 self._mark_error("telemetry loop error")
                 self.connected = False
@@ -554,7 +638,7 @@ class UR10eMiddlewareLocalMode:
             finally:
                 dt = time.time() - t0
                 sleep_s = max(0.0, interval - dt)
-                self._stop_evt.wait(timeout=sleep_s)
+                stop_evt.wait(timeout=sleep_s)
 
     def get_telemetry(self) -> Dict[str, Any]:
         """UI-friendly dict (safe to JSON serialize)."""
@@ -562,7 +646,7 @@ class UR10eMiddlewareLocalMode:
             tel: Optional[Telemetry] = self._latest.get("telemetry")
             urs: Dict[str, Any] = self._latest.get("urscript") or {}
             last_error = self._latest.get("error") or self._last_error
-            rtde_connected = bool(self._latest.get("rtde_connected", False))
+            rtde_connected = self.connected and bool(self._latest.get("rtde_connected", False))
 
         if not tel:
             return {
@@ -663,13 +747,16 @@ class UR10eMiddlewareLocalMode:
             return {"ok": False, "error": "rtde_r not connected"}
         try:
             # Read output integers written by .urs using rtde_r (RTDEReceiveInterface)
+            ack_before = int(self.rtde_r.getOutputIntRegister(OUT_ACK_SEQ))
             state = int(self.rtde_r.getOutputIntRegister(OUT_STATE))
             error_code = int(self.rtde_r.getOutputIntRegister(OUT_ERROR_CODE))
             current_mode = int(self.rtde_r.getOutputIntRegister(OUT_CURRENT_MODE))
             progress = int(self.rtde_r.getOutputIntRegister(OUT_PROGRESS))
-            ack_seq = int(self.rtde_r.getOutputIntRegister(OUT_ACK_SEQ))
-            self._last_ack_seq = ack_seq
             cal_status = int(self.rtde_r.getOutputIntRegister(OUT_CAL_STATUS))
+            ack_seq = int(self.rtde_r.getOutputIntRegister(OUT_ACK_SEQ))
+            if ack_before != ack_seq:
+                return {"ok": False, "error": "Robot register snapshot changed while reading"}
+            self._last_ack_seq = ack_seq
             logger.debug("read_urscript_registers: state=%d, ack_seq=%d", state, ack_seq)
             return {
                 "ok": True,
@@ -685,15 +772,13 @@ class UR10eMiddlewareLocalMode:
             return {"ok": False, "error": str(e)}
 
     def _latest_tcp_pose_m(self) -> Optional[Tuple[float, float, float, float, float, float]]:
-        with self._lock:
-            tel: Optional[Telemetry] = self._latest.get("telemetry")
-            if tel:
-                return tel.tcp_m
+        # Saving calibration must sample the current RTDE pose, not a cached
+        # pose from before the operator moved the tool.
         if self.rtde_r:
             try:
                 pose = self.rtde_r.getActualTCPPose()
                 pose_vals = [float(x) for x in pose]
-                if len(pose_vals) < 6:
+                if len(pose_vals) != 6 or not all(math.isfinite(x) for x in pose_vals):
                     return None
                 return (pose_vals[0], pose_vals[1], pose_vals[2], pose_vals[3], pose_vals[4], pose_vals[5])
             except Exception:
@@ -711,7 +796,16 @@ class UR10eMiddlewareLocalMode:
             return None
         try:
             with CALIBRATION_FILE.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                raise ValueError("Calibration must be an object")
+            for key in ("point_a_pose", "point_b_pose"):
+                pose = data.get(key)
+                if pose is not None and (not isinstance(pose, list) or len(pose) != 6
+                                         or any(isinstance(x, bool) or not isinstance(x, (int, float))
+                                                or not math.isfinite(x) for x in pose)):
+                    raise ValueError(f"Invalid calibration pose: {key}")
+            return data
         except Exception as exc:
             logger.warning("Failed to load calibration file: %s", exc)
             return None
@@ -725,10 +819,17 @@ class UR10eMiddlewareLocalMode:
             "point_b_pose": self._cal_point_b_pose,
         }
         try:
-            with CALIBRATION_FILE.open("w", encoding="utf-8") as fh:
-                json.dump(data, fh)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=CALIBRATION_FILE.parent,
+                                             delete=False) as fh:
+                temporary_path = fh.name
+                json.dump(data, fh, allow_nan=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temporary_path, CALIBRATION_FILE)
             return True
         except Exception as exc:
+            if 'temporary_path' in locals():
+                Path(temporary_path).unlink(missing_ok=True)
             logger.warning("Failed to save calibration file: %s", exc)
             return False
 
@@ -754,7 +855,7 @@ class UR10eMiddlewareLocalMode:
                 if int(cal.get("current_mode", -1)) == int(mode_id) and int(cal.get("progress", -1)) == 100:
                     return cal
             time.sleep(0.05)
-        return last or {"ok": False, "error": "timeout waiting for calibration update"}
+        return {"ok": False, "error": "timeout waiting for calibration update", "urscript": last}
 
     def _clear_input_command(self) -> None:
         """Clear the IN_CMD register to avoid replaying one-shot commands after restart."""
@@ -782,13 +883,17 @@ class UR10eMiddlewareLocalMode:
         if not self.rtde_io or not self._force_enable_supported:
             return
         try:
-            self.rtde_io.setInputIntRegister(IN_FORCE_ENABLE, 1 if enabled else 0)
+            self._write_int_register(IN_FORCE_ENABLE, 1 if enabled else 0)
         except Exception:
             self._force_enable_supported = False
             logger.warning(
                 "IN_FORCE_ENABLE unsupported; using signed IN_FORCE_X10 encoding",
                 exc_info=True,
             )
+
+    def _write_int_register(self, register: int, value: int) -> None:
+        if self.rtde_io.setInputIntRegister(register, value) is False:
+            raise RuntimeError(f"RTDE input register {register} write failed")
 
     def _ensure_speed_slider_for_motion(self, mode: int) -> None:
         # Avoid restoring speed slider on pause; restore for any motion-related command.
@@ -800,7 +905,9 @@ class UR10eMiddlewareLocalMode:
         if not self.rtde_io or not self.connected:
             return {"ok": False, "error": "RTDE is not connected"}
 
-        dashboard = self.get_dashboard_debug()
+        dashboard = ({"ok": True, "programState": self.dashboard.program_state(),
+                      "safetystatus": self.dashboard.safety_status()} if self.dashboard
+                     else {"ok": False, "error": "dashboard not connected"})
         if not dashboard.get("ok"):
             return {
                 "ok": False,
@@ -831,10 +938,28 @@ class UR10eMiddlewareLocalMode:
                 "hint": "Load the massage host program and press Play in PolyScope before starting massage.",
                 "dashboard": dashboard,
             }
+        if safety.replace("SAFETYSTATUS:", "", 1).strip() not in ("NORMAL", "REDUCED"):
+            return {"ok": False, "error": "Robot safety state is unavailable or not ready", "dashboard": dashboard}
+        with self._lock:
+            telemetry = self._latest.get("telemetry")
+        if telemetry is None or not math.isfinite(telemetry.ts) or not 0 <= time.time() - telemetry.ts <= 2.0:
+            return {"ok": False, "error": "Fresh robot telemetry is required before motion", "dashboard": dashboard}
+        if len(telemetry.ft) != 6 or not all(math.isfinite(value) for value in telemetry.ft):
+            return {
+                "ok": False,
+                "error": "Robot force/torque readings are invalid; motion is blocked",
+                "hint": "Check the force sensor and tool configuration in PolyScope before retrying.",
+                "dashboard": dashboard,
+            }
+        if len(telemetry.tcp_m) != 6 or not all(math.isfinite(value) for value in telemetry.tcp_m):
+            return {"ok": False, "error": "Robot TCP pose is invalid; motion is blocked", "dashboard": dashboard}
         return {"ok": True, "dashboard": dashboard}
 
     def _arm_host_program(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
         """Send and confirm the STOP edge required by the local-mode URScript."""
+        urs = self.read_urscript_registers()
+        if urs.get("state") == STATE_RETURNING_HOME:
+            return {"ok": False, "error": "Robot is returning home; wait until it is idle"}
         result = self.send_mode(
             0,
             speed_x100=100,
@@ -851,6 +976,9 @@ class UR10eMiddlewareLocalMode:
                 "Confirm the correct host program is PLAYING and its RTDE register map matches this middleware.",
             )
         if result.get("ok"):
+            if (result.get("urscript") or {}).get("state") != 0:
+                return {"ok": False, "seq": result.get("seq"), "error": "Arming Stop did not confirm an idle robot"}
+            self._capture_home_pose()
             return self._upload_home_pose(expected_stop_generation)
         return result
 
@@ -983,9 +1111,10 @@ class UR10eMiddlewareLocalMode:
                 return {"ok": False, "error": "Command cancelled by Stop"}
             urs = self.read_urscript_registers()
             if (urs.get("ok") and urs.get("state") == STATE_RETURNING_HOME
-                    and (effective_mode not in (0, 5) or duration_s == -1)):
+                    and effective_mode not in (0, 5)):
                 return {"ok": False, "error": "Robot is returning home; wait until it is idle"}
-            self._ensure_speed_slider_for_motion(effective_mode)
+            # Preserve the pendant's speed slider; a network command must not
+            # silently raise an operator's reduced speed to 100 percent.
             seq = self._next_seq()
             logger.info("send_mode: generated seq=%d", seq)
 
@@ -1000,15 +1129,13 @@ class UR10eMiddlewareLocalMode:
                 self._write_force_enable(bool(force_enable))
                 effective_force_x10 = -abs(int(force_x10)) if force_enable else 0
                 logger.info("send_mode: effective_force_x10=%d", effective_force_x10)
-                self.rtde_io.setInputIntRegister(IN_SPEED_X100, int(speed_x100))
-                self.rtde_io.setInputIntRegister(IN_FORCE_X10, int(effective_force_x10))
-                self.rtde_io.setInputIntRegister(IN_DURATION_S, int(duration_s))
-                self.rtde_io.setInputIntRegister(IN_CMD, int(effective_mode))
-                self.rtde_io.setInputIntRegister(IN_CMD_SEQ, int(seq))
+                for register, value in ((IN_SPEED_X100, speed_x100), (IN_FORCE_X10, effective_force_x10),
+                                        (IN_DURATION_S, duration_s), (IN_CMD, effective_mode), (IN_CMD_SEQ, seq)):
+                    self._write_int_register(register, int(value))
                 logger.info("send_mode: Registers written successfully")
             except Exception as e:
                 logger.exception("send_mode: Failed to write registers")
-                return {"ok": False, "error": f"failed to write registers: {e}"}
+                return {"ok": False, "seq": seq, "error": f"failed to write registers: {e}"}
 
         # Only register writes are serialized. Waiting here must never hold up STOP.
         if not wait_ack:
@@ -1055,13 +1182,18 @@ class UR10eMiddlewareLocalMode:
     def start_massage(self, command: MassageCommand) -> Dict[str, Any]:
         generation = self._stop_generation
         mode_id = self._resolve_mode_id(command.mode)
-        if mode_id is None:
+        if mode_id not in (1, 2, 3, 4):
             return {"ok": False, "error": "unknown or missing mode"}
+        duration_s = 300 if command.duration is None else self._resolve_duration_s(command.duration)
+        if not 1 <= duration_s <= 1800:
+            return {"ok": False, "error": "Duration must be between 1 and 1800 seconds"}
         preflight = self._motion_preflight()
         if not preflight.get("ok"):
             return preflight
         cal = self.read_urscript_registers()
         if cal.get("ok"):
+            if cal.get("state") in (1, 2):
+                return {"ok": False, "error": "A robot session is already running or paused; Stop it before a new Start"}
             cal_status = cal.get("cal_status")
             # Allow cal_status 0 (demo mode - no calibration) or 3 (fully calibrated)
             # ur10e_demo_smooth_27.urs outputs 0 because it doesn't use calibration
@@ -1076,7 +1208,6 @@ class UR10eMiddlewareLocalMode:
         if not arm_result.get("ok"):
             return arm_result
         force_x10 = self._resolve_force_x10(command.intensity)
-        duration_s = self._resolve_duration_s(command.duration)
         force_enable = bool(getattr(command, "force_assist", False))
         return self.send_mode(
             mode_id,
@@ -1107,12 +1238,17 @@ class UR10eMiddlewareLocalMode:
         return {"ok": False, "seq": seq, "urscript": urs,
                 "error": "Robot stop was not confirmed. Retry Stop or use the pendant Stop button."}
 
-    def stop_massage(self) -> Dict[str, Any]:
+    def stop_massage(self, return_home: bool = True) -> Dict[str, Any]:
         """Confirm STOP promptly; telemetry reports completion of its home return."""
         logger.info("stop_massage: Sending CMD=0 (soft stop)...")
         with self._send_mode_lock:
             self._stop_generation += 1
-        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
+        urs = self.read_urscript_registers()
+        # Safety faults require a stationary release, not recovery travel.
+        if urs.get("error_code") in (2, 5):
+            return_home = False
+        stop_duration = 0 if return_home else -1
+        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=stop_duration, force_enable=False, wait_ack=False)
         if not result.get("ok"):
             return result
         confirmed = self._wait_for_stop_ack(result["seq"], 0.4)
@@ -1123,7 +1259,7 @@ class UR10eMiddlewareLocalMode:
         self._hard_stop_rtde_control()
         # A future START/RESUME restores speed; do not raise the slider while
         # a STOP is unconfirmed. Retry with a fresh sequence and verify it too.
-        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=0, force_enable=False, wait_ack=False)
+        result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=stop_duration, force_enable=False, wait_ack=False)
         if result.get("ok"):
             result = self._wait_for_stop_ack(result["seq"], 1.0)
         result["fallback_triggered"] = True
@@ -1150,35 +1286,46 @@ class UR10eMiddlewareLocalMode:
         logger.info("resume_massage: Sending CMD=6 (resume)...")
         if not self.rtde_io:
             return {"ok": False, "error": "rtde_io not connected"}
+        preflight = self._motion_preflight()
+        if not preflight.get("ok"):
+            return preflight
         result = self.send_mode(6, speed_x100=100, force_x10=0, duration_s=0, force_enable=False,
                                 wait_ack=True, expected_stop_generation=generation)
         if result.get("ok"):
             urs = result.get("urscript") or {}
             if int(urs.get("state", 0)) != 1:  # STATE_RUNNING = 1
-                result["warning"] = "resume sent but URScript did not transition to RUNNING (was nothing paused?)"
+                result["ok"] = False
+                result["error"] = "Robot did not resume; no paused massage is available"
         return result
 
     def adjust_speed(self, delta: float) -> Dict[str, Any]:
-        if not self.rtde_io:
-            return {"ok": False, "error": "rtde_io not connected"}
-        try:
-            self._speed_scale_x100 = max(10, min(200, int(self._speed_scale_x100 + delta * 100)))
-            self.rtde_io.setInputIntRegister(IN_SPEED_X100, int(self._speed_scale_x100))
-            return {"ok": True, "speed_scale_x100": self._speed_scale_x100}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "The bundled demo does not support live speed commands; use the pendant speed slider"}
 
     def start_jog(self, direction: str, duration_s: Optional[float] = None) -> Dict[str, Any]:
+        generation = self._stop_generation
+        if direction not in ("z_up", "z_down"):
+            return {"ok": False, "error": "Unknown jog direction"}
+        preflight = self._motion_preflight()
+        if not preflight.get("ok"):
+            return preflight
         mode_id = CMD_JOG_Z_UP if direction == "z_up" else CMD_JOG_Z_DOWN
-        result = self.send_mode(mode_id, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
-        if duration_s and duration_s > 0:
-            stop_at = time.time() + float(duration_s)
-            while time.time() < stop_at:
+        duration_s = 1.0 if duration_s is None else float(duration_s)
+        if not math.isfinite(duration_s) or not 0 < duration_s <= 3:
+            return {"ok": False, "error": "Jog duration must be greater than 0 and at most 3 seconds"}
+        result = self.send_mode(mode_id, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                expected_stop_generation=generation)
+        if result.get("ok"):
+            stop_at = time.monotonic() + duration_s
+            while time.monotonic() < stop_at and generation == self._stop_generation:
                 time.sleep(0.02)
-            self.stop_massage()
+            if generation == self._stop_generation:
+                stopped = self.stop_massage(return_home=False)
+                if not stopped.get("ok"):
+                    return stopped
         return result
 
     def save_calibration_point_a(self) -> Dict[str, Any]:
+        generation = self._stop_generation
         logger.info("save_calibration_point_a: Sending CMD_SAVE_POINT_A=%d", CMD_SAVE_POINT_A)
         dbg = self.get_dashboard_debug()
         if dbg.get("ok"):
@@ -1193,8 +1340,17 @@ class UR10eMiddlewareLocalMode:
         cal_before = self.read_urscript_registers()
         if cal_before.get("ok") and cal_before.get("cal_status") in (-1, 2, 3):
             logger.info("save_calibration_point_a: clearing stale calibration (status=%s)", cal_before.get("cal_status"))
-            self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
-        result = self.send_mode(CMD_SAVE_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+            cleared = self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                     expected_stop_generation=generation)
+            if not cleared.get("ok"):
+                return cleared
+        result = self.send_mode(CMD_SAVE_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                expected_stop_generation=generation)
+        if not result.get("ok"):
+            return result
+        cal = self._wait_for_calibration_update(CMD_SAVE_POINT_A)
+        if not cal.get("ok") or cal.get("cal_status") not in (1, 3):
+            return {"ok": False, "error": cal.get("error") or "Host did not save Point A", "urscript": cal}
         logger.info("save_calibration_point_a: send_mode result=%s", result)
         pose = self._latest_tcp_pose_m()
         logger.info("save_calibration_point_a: latest_tcp_pose=%s", pose)
@@ -1202,7 +1358,6 @@ class UR10eMiddlewareLocalMode:
             self._cal_point_a_pose = list(pose)
             self._save_calibration_to_file()
             result["point_a_xyz"] = self._xyz_mm_from_pose(pose)
-        cal = self._wait_for_calibration_update(CMD_SAVE_POINT_A)
         logger.info("save_calibration_point_a: urscript_registers=%s", cal)
         if cal.get("ok"):
             result["calibration_status"] = cal.get("cal_status")
@@ -1211,6 +1366,7 @@ class UR10eMiddlewareLocalMode:
         return result
 
     def save_calibration_point_b(self) -> Dict[str, Any]:
+        generation = self._stop_generation
         logger.info("save_calibration_point_b: Sending CMD_SAVE_POINT_B=%d", CMD_SAVE_POINT_B)
         dbg = self.get_dashboard_debug()
         if dbg.get("ok"):
@@ -1251,7 +1407,10 @@ class UR10eMiddlewareLocalMode:
             # This removes the stale point_b that would cause path calculation to fail
             if cal_before.get("cal_status") == -1:
                 logger.info("save_calibration_point_b: clearing stale calibration (status=-1)")
-                self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+                cleared = self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                         expected_stop_generation=generation)
+                if not cleared.get("ok"):
+                    return cleared
             pose_a = self._cal_point_a_pose
             if not pose_a:
                 saved = self._load_calibration_from_file() or {}
@@ -1261,10 +1420,17 @@ class UR10eMiddlewareLocalMode:
                 pose_result = self.set_calibration_pose(*pose_a[:6])
                 if not pose_result.get("ok"):
                     return {"ok": False, "message": pose_result.get("error") or "Failed to write Point A pose"}
-                restore_result = self.send_mode(CMD_SET_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+                restore_result = self.send_mode(CMD_SET_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                                expected_stop_generation=generation)
                 if not restore_result.get("ok"):
                     return {"ok": False, "message": restore_result.get("error") or "Failed to restore Point A"}
-        result = self.send_mode(CMD_SAVE_POINT_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+        result = self.send_mode(CMD_SAVE_POINT_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                expected_stop_generation=generation)
+        if not result.get("ok"):
+            return result
+        cal = self._wait_for_calibration_update(CMD_SAVE_POINT_B)
+        if not cal.get("ok") or cal.get("cal_status") != 3:
+            return {"ok": False, "error": cal.get("error") or "Host did not validate Point B", "urscript": cal}
         logger.info("save_calibration_point_b: send_mode result=%s", result)
         pose = self._latest_tcp_pose_m()
         logger.info("save_calibration_point_b: latest_tcp_pose=%s", pose)
@@ -1272,31 +1438,10 @@ class UR10eMiddlewareLocalMode:
             self._cal_point_b_pose = list(pose)
             self._save_calibration_to_file()
             result["point_b_xyz"] = self._xyz_mm_from_pose(pose)
-        cal = self._wait_for_calibration_update(CMD_SAVE_POINT_B)
         logger.info("save_calibration_point_b: urscript_registers=%s", cal)
         if cal.get("ok"):
             result["calibration_status"] = cal.get("cal_status")
             result["calibration_status_text"] = self._calibration_status_to_text(result.get("calibration_status"))
-            # If URScript still marks calibration invalid, force-set A/B from RTDE poses.
-            if result.get("calibration_status") == -1:
-                logger.info("save_calibration_point_b: forcing set_point_a/b from RTDE poses")
-                pose_a = self._cal_point_a_pose
-                if not pose_a:
-                    saved = self._load_calibration_from_file() or {}
-                    pose_a = saved.get("point_a_pose")
-                pose_b = self._cal_point_b_pose or pose
-                if pose_a and pose_b and len(pose_a) >= 6 and len(pose_b) >= 6:
-                    self.set_calibration_pose(*pose_a[:6])
-                    self.send_mode(CMD_SET_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
-                    self.set_calibration_pose(*pose_b[:6])
-                    self.send_mode(CMD_SET_POINT_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
-                    cal_retry = self._wait_for_calibration_update(CMD_SET_POINT_B)
-                    logger.info("save_calibration_point_b: post-retry urscript_registers=%s", cal_retry)
-                    if cal_retry.get("ok"):
-                        result["calibration_status"] = cal_retry.get("cal_status")
-                        result["calibration_status_text"] = self._calibration_status_to_text(
-                            result.get("calibration_status")
-                        )
         self._clear_input_command()
         return result
 
@@ -1310,6 +1455,9 @@ class UR10eMiddlewareLocalMode:
         return self.send_mode(CMD_MOVE_TO_SAFE, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
 
     def clear_calibration(self) -> Dict[str, Any]:
+        result = self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+        if not result.get("ok"):
+            return result
         self._cal_point_a_pose = None
         self._cal_point_b_pose = None
         if CALIBRATION_FILE.exists():
@@ -1317,7 +1465,6 @@ class UR10eMiddlewareLocalMode:
                 CALIBRATION_FILE.unlink()
             except Exception:
                 pass
-        result = self.send_mode(CMD_CLEAR_CALIBRATION, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
         result["calibration_status"] = 0
         result["calibration_status_text"] = self._calibration_status_to_text(0)
         return result
@@ -1334,6 +1481,7 @@ class UR10eMiddlewareLocalMode:
         }
 
     def restore_calibration(self) -> Dict[str, Any]:
+        generation = self._stop_generation
         dbg = self.get_dashboard_debug()
         if dbg.get("ok"):
             state = str(dbg.get("programState") or "").upper()
@@ -1364,18 +1512,28 @@ class UR10eMiddlewareLocalMode:
                 skip_b = True
 
         if pose_a and len(pose_a) >= 6:
-            self.set_calibration_pose(*pose_a[:6])
-            self.send_mode(CMD_SET_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+            pose_result = self.set_calibration_pose(*pose_a[:6])
+            if not pose_result.get("ok"):
+                return {"ok": False, "error": pose_result.get("error"), "restored": restored}
+            result = self.send_mode(CMD_SET_POINT_A, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                    expected_stop_generation=generation)
+            if not result.get("ok"):
+                return {**result, "restored": restored}
             self._cal_point_a_pose = list(pose_a[:6])
             restored.append("A")
         if pose_b and len(pose_b) >= 6 and not skip_b:
-            self.set_calibration_pose(*pose_b[:6])
-            self.send_mode(CMD_SET_POINT_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True)
+            pose_result = self.set_calibration_pose(*pose_b[:6])
+            if not pose_result.get("ok"):
+                return {"ok": False, "error": pose_result.get("error"), "restored": restored}
+            result = self.send_mode(CMD_SET_POINT_B, speed_x100=100, force_x10=30, duration_s=0, wait_ack=True,
+                                    expected_stop_generation=generation)
+            if not result.get("ok"):
+                return {**result, "restored": restored}
             self._cal_point_b_pose = list(pose_b[:6])
             restored.append("B")
         cal = self.read_urscript_registers()
         return {
-            "ok": True,
+            "ok": bool(restored) and bool(cal.get("ok")),
             "restored": restored,
             "calibration_status": cal.get("cal_status") if cal.get("ok") else None,
             "calibration_status_text": self._calibration_status_to_text(
@@ -1390,12 +1548,12 @@ class UR10eMiddlewareLocalMode:
         if not self.rtde_io:
             return {"ok": False, "error": "rtde_io not connected"}
         try:
-            self.rtde_io.setInputDoubleRegister(IN_POSE_X, float(x))
-            self.rtde_io.setInputDoubleRegister(IN_POSE_Y, float(y))
-            self.rtde_io.setInputDoubleRegister(IN_POSE_Z, float(z))
-            self.rtde_io.setInputDoubleRegister(IN_POSE_RX, float(rx))
-            self.rtde_io.setInputDoubleRegister(IN_POSE_RY, float(ry))
-            self.rtde_io.setInputDoubleRegister(IN_POSE_RZ, float(rz))
+            values = [float(value) for value in (x, y, z, rx, ry, rz)]
+            if not all(math.isfinite(value) for value in values):
+                return {"ok": False, "error": "Calibration pose contains non-finite values"}
+            for register, value in zip((IN_POSE_X, IN_POSE_Y, IN_POSE_Z, IN_POSE_RX, IN_POSE_RY, IN_POSE_RZ), values):
+                if self.rtde_io.setInputDoubleRegister(register, value) is False:
+                    return {"ok": False, "error": f"Calibration register {register} write failed"}
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

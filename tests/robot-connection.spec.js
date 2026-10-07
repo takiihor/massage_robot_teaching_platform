@@ -106,6 +106,7 @@ test('real host rejection explains why motion did not start', async ({ page }) =
   await page.route('**/robot/state', route => route.fulfill({ json: { connected: true, simulation_enabled: false } }));
   await page.route('**/api/command', route => route.fulfill({ json: {
     ok: false, error: 'PolyScope host program is not PLAYING',
+    motion_possible: false,
     hint: 'Load the massage host program and press Play in PolyScope before starting massage.'
   } }));
   await page.evaluate(() => window.sttService.eventBus.emit('result', { text: 'start' }));

@@ -49,4 +49,23 @@ const config = {
   ]
 };
 
+// Opt-in isolated test server. Existing TEST_URL deployments retain their
+// usual behavior, while CI can run without a robot or cloud credentials.
+if (process.env.TEST_START_SERVER === '1') {
+  config.webServer = {
+    command: 'python3 main.py',
+    url: `${resolveBaseURL()}/health`,
+    reuseExistingServer: false,
+    timeout: 30000,
+    env: {
+      HOST: '127.0.0.1',
+      AUTO_CONNECT_RTDE: '0',
+      MASSAGE_SIMULATION_MODE: '0',
+      ENABLE_AZURE_SPEECH_STT: 'false',
+      AZURE_SPEECH_KEY: '',
+      AZURE_SPEECH_REGION: ''
+    }
+  };
+}
+
 module.exports = config;
