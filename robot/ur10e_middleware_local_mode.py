@@ -573,7 +573,20 @@ class UR10eMiddlewareLocalMode:
             }
 
         tcp = tel.tcp_m
-        ft = tel.ft
+        # RTDE can report unavailable measurements as NaN/Infinity. JSON APIs
+        # must expose those as null, not fail the connection status request.
+        # Reject invalid poses before the trigonometric conversion as well.
+        if not all(math.isfinite(value) for value in tcp):
+            return {
+                "ok": False,
+                "error": "RTDE TCP pose contains non-finite values",
+                "rtde_connected": rtde_connected,
+                "ts": time.time(),
+            }
+        ft = tuple(value if math.isfinite(value) else None for value in tel.ft)
+        speed_scaling = tel.speed_scaling
+        if speed_scaling is not None and not math.isfinite(speed_scaling):
+            speed_scaling = None
         roll, pitch, yaw = self._rotvec_to_rpy(tcp[3], tcp[4], tcp[5])
         return {
             "ok": True,
@@ -595,7 +608,7 @@ class UR10eMiddlewareLocalMode:
                 "fx_n": ft[0], "fy_n": ft[1], "fz_n": ft[2],
                 "tx_nm": ft[3], "ty_nm": ft[4], "tz_nm": ft[5],
             },
-            "speed_scaling": tel.speed_scaling,
+            "speed_scaling": speed_scaling,
             "program_state": tel.program_state,
             "robot_mode": tel.robot_mode,
             "safety_status": tel.safety_status,
