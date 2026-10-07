@@ -544,7 +544,21 @@ export function createScenarioController(options = {}) {
         // If the massage session is still running, stop it now.
         // activeScenario is already null so handleSessionEnded will return early,
         // preventing any re-entry or double-completion.
-        window.currentMassageSession?.stop?.('completed');
+        if (window.currentMassageSession) {
+            const reportStopFailure = error => {
+                const message = error?.message || 'Robot Stop was not confirmed. Retry Stop or use the pendant Stop button.';
+                if (typeof window.addSystemMessage === 'function') window.addSystemMessage(message, 'error');
+                else console.error('[ScenarioController]', message);
+            };
+            try {
+                const stopping = typeof window.app?.stopSession === 'function'
+                    ? window.app.stopSession('completed')
+                    : window.currentMassageSession.stop?.('completed');
+                Promise.resolve(stopping).catch(reportStopFailure);
+            } catch (error) {
+                reportStopFailure(error);
+            }
+        }
     }
 
     function enableKeyboardExpressionMode() {

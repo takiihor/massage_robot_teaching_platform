@@ -3,6 +3,7 @@
 This checks control flow, not UR controller scheduling or physical deceleration.
 """
 import re
+import math
 import unittest
 
 from test_robot_reference_frame import SCRIPT, python_block, pose_trans
@@ -18,6 +19,8 @@ class ActionHarness:
         initial = source.split('blocking_action_handle = 0', 1)[1].split('thread blocking_action_worker', 1)[0]
         exec(python_block('blocking_action_handle = 0' + initial), self.ns)
         self.ns.update(last_seq=1, active_mode=4, paused_mode=0, return_home_pending=False,
+                       heartbeat_elapsed_s=0, session_elapsed_s=0, session_duration_s=300,
+                       system_armed=True, safety_fault_latched=False, output_seq=-1, output_error=0,
                        home_pose=[0.3, 0.1, 0.35, 3.141592653589793, 0, 0])
         registers = {self.ns['IN_CMD']: 4, self.ns['IN_CMD_SEQ']: 1,
                      self.ns['IN_DURATION_S']: 0}
@@ -44,9 +47,10 @@ class ActionHarness:
             rg_grip=lambda *args, **kwargs: self.calls.append(('grip', args, kwargs['blocking'])),
             pose_trans=pose_trans, get_actual_tcp_pose=lambda: [0.3, 0.25, 0.35, 3.141592653589793, 0, 0],
             movel=lambda *args, **kwargs: self.calls.append(('move', args, kwargs)),
+            sqrt=math.sqrt, get_tcp_force=lambda: [0] * 6,
             set_outputs=lambda *args: self.calls.append(('outputs', args)))
-        for name in ('blocking_action_worker', 'cancel_blocking_action', 'rg2_open_only',
-                     'request_stop', 'return_home', 'check_stop_or_pause', 'wait_for_blocking_action', 'movel_interruptible',
+        for name in ('blocking_action_worker', 'cancel_blocking_action', 'rg2_open_only', 'force_limit_exceeded', 'overforce_check_and_stop',
+                     'request_stop', 'return_home', 'check_session_safety', 'check_stop_or_pause', 'wait_for_blocking_action', 'movel_interruptible',
                      'grip_interruptible', 'rg2_close_open_interruptible', 'batch_return_interruptible'):
             block = re.search(r'^(?:def|thread) ' + name + r'\(.*?^end$', source,
                               re.MULTILINE | re.DOTALL).group()
@@ -54,6 +58,153 @@ class ActionHarness:
 
 
 class RobotActionStopTest(unittest.TestCase):
+    def test_heartbeat_loss_cancels_stalled_action_and_releases_without_return_travel(self):
+        h = ActionHarness(stalled=True)
+        h.ns['sleep'] = lambda seconds: h.ns.update(heartbeat_elapsed_s=3.0)
+        self.assertTrue(h.ns['movel_interruptible']([0] * 6, 0, 40))
+        self.assertIn(('kill', 77), h.calls)
+        self.assertFalse(h.ns['return_home_pending'])
+        self.assertFalse(h.ns['system_armed'])
+        self.assertEqual(h.calls[-1], ('outputs', (0, 0, 40, 1, 5)))
+        self.assertFalse(any(call[0] == 'move' for call in h.calls))
+
+    def test_duration_expires_during_stalled_grip_without_browser_stop(self):
+        h = ActionHarness(stalled=True)
+        h.registers[h.ns['IN_DURATION_S']] = 300
+        h.ns['sleep'] = lambda seconds: h.ns.update(session_elapsed_s=300)
+        self.assertTrue(h.ns['grip_interruptible'](20, 10, 99))
+        self.assertIn(('kill', 77), h.calls)
+        self.assertEqual(h.ns['active_mode'], 0)
+        self.assertTrue(h.ns['return_home_pending'])
+
+    def test_force_limit_covers_all_axes_and_signs_during_blocking_action(self):
+        for axis in range(3):
+            for sign in (-1, 1):
+                with self.subTest(axis=axis, sign=sign):
+                    h = ActionHarness(stalled=True)
+                    force = [0] * 6
+                    h.ns['get_tcp_force'] = lambda: force
+                    h.ns['sleep'] = lambda seconds: force.__setitem__(axis, sign * 26)
+                    self.assertTrue(h.ns['movel_interruptible']([0] * 6, 0, 30))
+                    self.assertIn(('kill', 77), h.calls)
+                    self.assertFalse(h.ns['return_home_pending'])
+                    self.assertEqual(h.calls[-1][1][-1], 2)
+
+    def test_nonfinite_force_fails_closed_without_return_travel(self):
+        for axis in range(3):
+            for value in (float('nan'), float('inf'), float('-inf'), 1e308, -1e308):
+                with self.subTest(axis=axis, value=value):
+                    h = ActionHarness(stalled=True)
+                    force = [0.0] * 6
+                    h.ns['get_tcp_force'] = lambda: force
+                    h.ns['sleep'] = lambda seconds: force.__setitem__(axis, value)
+                    self.assertTrue(h.ns['movel_interruptible']([0] * 6, 0, 30))
+                    self.assertIn(('kill', 77), h.calls)
+                    self.assertIn(('stop',), h.calls)
+                    self.assertTrue(any(call[0] == 'grip' and not call[2] for call in h.calls))
+                    self.assertFalse(h.ns['return_home_pending'])
+                    self.assertFalse(h.ns['system_armed'])
+                    self.assertTrue(h.ns['safety_fault_latched'])
+                    self.assertEqual(h.calls[-1][1][-1], 2)
+
+    def test_force_guard_keeps_vector_limit_and_negative_readings_without_square_root(self):
+        h = ActionHarness()
+        def reject_sqrt(value):
+            raise RuntimeError('Controller square-root domain error')
+        h.ns['sqrt'] = reject_sqrt
+        for force, exceeded in (([0, 0, 0], False), ([-3, 4, -5], False),
+                                ([15, -20, 0], False), ([0, 0, -25], False),
+                                ([15.0001, -20, 0], True), ([20, -20, 0], True),
+                                ([-26, 0, 0], True)):
+            with self.subTest(force=force):
+                h.ns['get_tcp_force'] = lambda: force + [0, 0, 0]
+                self.assertEqual(h.ns['overforce_check_and_stop'](), exceeded)
+
+    def test_invalid_or_overlimit_force_is_rejected_before_multiplication(self):
+        class UnsafeArithmetic(float):
+            def __mul__(self, other):
+                raise ArithmeticError('Controller cannot square this reading')
+        h = ActionHarness()
+        for axis in range(3):
+            for value in (float('nan'), float('inf'), float('-inf'), 1e308, -1e308):
+                with self.subTest(axis=axis, value=value):
+                    force = [0.0] * 6
+                    force[axis] = UnsafeArithmetic(value)
+                    self.assertTrue(h.ns['force_limit_exceeded'](force))
+
+    def test_heartbeat_loss_clears_paused_mode_and_interrupts_return(self):
+        for paused, returning in ((4, False), (0, True)):
+            h = ActionHarness()
+            h.ns.update(active_mode=0, paused_mode=paused, return_home_pending=returning,
+                        heartbeat_elapsed_s=3)
+            self.assertEqual(h.ns['check_session_safety'](0), 3)
+            self.assertEqual(h.ns['paused_mode'], 0)
+            self.assertFalse(h.ns['return_home_pending'])
+
+    def test_stop_after_a_safety_fault_never_requests_return_travel(self):
+        h = ActionHarness()
+        h.ns.update(heartbeat_elapsed_s=3)
+        self.assertEqual(h.ns['check_session_safety'](0), 3)
+        h.ns['request_stop']()
+        self.assertFalse(h.ns['return_home_pending'])
+        self.assertTrue(h.ns['safety_fault_latched'])
+        h.registers[h.ns['IN_DURATION_S']] = -1
+        h.ns['request_stop']()
+        self.assertFalse(h.ns['return_home_pending'])
+        self.assertFalse(h.ns['safety_fault_latched'])
+
+    def test_controller_clock_counts_running_time_and_detects_heartbeat_changes(self):
+        h = ActionHarness()
+        heartbeat = [1.0]
+        h.ns.update(get_steptime=lambda: .002, last_heartbeat=0,
+                    read_input_float_register=lambda register: heartbeat[0])
+        def one_tick():
+            raise StopIteration()
+        h.ns['sync'] = one_tick
+        source = re.search(r'^thread session_clock\(.*?^end$', SCRIPT.read_text(), re.MULTILINE | re.DOTALL).group()
+        exec(python_block(source), h.ns)
+        def tick():
+            with self.assertRaises(StopIteration):
+                h.ns['session_clock']()
+        tick()
+        self.assertAlmostEqual(h.ns['session_elapsed_s'], .002)
+        self.assertEqual(h.ns['heartbeat_elapsed_s'], 0)
+        h.ns['active_mode'] = 0
+        tick()
+        self.assertAlmostEqual(h.ns['session_elapsed_s'], .002)
+        self.assertAlmostEqual(h.ns['heartbeat_elapsed_s'], .002)
+        heartbeat[0] = 2
+        h.ns['active_mode'] = 4
+        tick()
+        self.assertAlmostEqual(h.ns['session_elapsed_s'], .004)
+        self.assertEqual(h.ns['heartbeat_elapsed_s'], 0)
+
+    def test_ack_is_published_after_state_and_error(self):
+        h = ActionHarness()
+        writes = []
+        h.ns['write_output_integer_register'] = lambda reg, value: writes.append((reg, value))
+        source = re.search(r'^def set_outputs\(.*?^end$', SCRIPT.read_text(), re.MULTILINE | re.DOTALL).group()
+        exec(python_block(source), h.ns)
+        h.ns['set_outputs'](0, 0, 0, 10, 3)
+        self.assertEqual(writes[-1], (h.ns['OUT_ACK_SEQ'], 10))
+        self.assertIn((h.ns['OUT_ERROR_CODE'], 3), writes[:-1])
+
+    def test_unsupported_active_command_is_rejected_until_a_new_sequence(self):
+        h = ActionHarness()
+        writes = []
+        h.ns['write_output_integer_register'] = lambda reg, value: writes.append((reg, value))
+        source = re.search(r'^def set_outputs\(.*?^end$', SCRIPT.read_text(), re.MULTILINE | re.DOTALL).group()
+        exec(python_block(source), h.ns)
+        h.registers[h.ns['IN_CMD']] = 101
+        h.registers[h.ns['IN_CMD_SEQ']] = 2
+        self.assertEqual(h.ns['check_stop_or_pause'](30), 0)
+        self.assertEqual(h.ns['active_mode'], 4)
+        h.ns['set_outputs'](1, 4, 40, 2, 0)
+        errors = [value for reg, value in writes if reg == h.ns['OUT_ERROR_CODE']]
+        self.assertEqual(errors, [1, 1])
+        h.ns['set_outputs'](0, 0, 0, 3, 0)
+        self.assertEqual(h.ns['output_error'], 0)
+
     def test_stop_and_pause_cancel_a_stalled_move_or_grip_without_waiting_for_completion(self):
         for action in ('move', 'grip'):
             for command in (0, 5):

@@ -52,6 +52,7 @@
     };
 
     let initialized = false;
+    let teachingPresetPreviewActive = false;
     let renderTimer = null;
     let healthTimer = null;
     let sttUnsubscribers = [];
@@ -122,8 +123,12 @@
 
     async function refreshRobotHealth() {
         const requestId = ++robotHealthRequest;
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timeout = controller ? window.setTimeout(() => controller.abort(), 3000) : null;
         try {
-            const response = await fetch(`${window.API_URL || ''}/robot/state`, { cache: 'no-store' });
+            const response = await fetch(`${window.API_URL || ''}/robot/state`, {
+                cache: 'no-store', signal: controller?.signal
+            });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             if (requestId !== robotHealthRequest) return data;
@@ -136,6 +141,22 @@
             const dot = $('y65RobotStateDot');
             if (dot) dot.classList.toggle('offline', !state.connection.connected);
             renderRobotConnectionSettings(true);
+            const session = window.currentMassageSession;
+            const robot = data.state?.urscript_state;
+            if (data.connected === true && session && !session.simulation && !session._stopPromise && robot?.state === 0
+                && Number.isInteger(session.commandSeq) && Number.isInteger(session.connectionId)
+                && ((Number.isInteger(robot.ack_seq)
+                    && (robot.ack_seq - session.commandSeq + 2000000000) % 2000000000 < 1000000000)
+                    || (Number.isInteger(data.neutralized_connection_id)
+                        && data.neutralized_connection_id === data.connection_id && data.connection_id !== session.connectionId))) {
+                // A confirmed controller stop or a neutralized replacement
+                // connection ends this UI session without requesting travel.
+                const fault = [2, 5].includes(robot.error_code);
+                session.finish(fault ? 'robot_safety_stop' : 'robot_completed');
+                addSystemMessage(fault
+                    ? `Robot safety stop (code ${robot.error_code}). Check the pendant before restarting.`
+                    : 'The robot controller ended the session.', fault ? 'error' : 'info');
+            }
             return data;
         } catch (error) {
             if (requestId !== robotHealthRequest) return null;
@@ -147,6 +168,8 @@
             $('y65RobotStateDot')?.classList.add('offline');
             renderRobotConnectionSettings(false);
             return null;
+        } finally {
+            if (timeout != null) window.clearTimeout(timeout);
         }
     }
 
@@ -223,7 +246,7 @@
     }
 
     function syncVitalsFromTeachingState() {
-        if (state.uiMode === 'SETUP' && !window.currentMassageSession) {
+        if (state.uiMode === 'SETUP' && !window.currentMassageSession && !teachingPresetPreviewActive) {
             state.vitals = { ...DEFAULT_VITALS };
             state.instructor.scenario = {
                 ...DEFAULT_SUBJECTIVE,
@@ -274,6 +297,7 @@
     }
 
     function resetTeachingVisualsToSetupBaseline() {
+        teachingPresetPreviewActive = false;
         state.vitals = { ...DEFAULT_VITALS };
         state.instructor.scenario = {
             ...DEFAULT_SUBJECTIVE,
@@ -302,7 +326,10 @@
         window.Year65UI?.resetVitalsAndExpressionBaseline?.(DEFAULT_VITALS);
     }
 
-    function syncYear65UI() {
+    function syncYear65UI(options = {}) {
+        // Explicit instructor selections may preview the patient before a session starts.
+        // Keep the preview across periodic refreshes until the next baseline reset.
+        if (options.previewTeachingPreset === true) teachingPresetPreviewActive = true;
         syncVitalsFromTeachingState();
         updateSessionCountdown();
         updateSessionDetails();
@@ -332,8 +359,10 @@
             duration: Math.max(1, Math.round(command.durationMin * 60)),
             force_assist: false
         };
+        window.__lastRobotApiResult = null;
         const ok = await window.RobotController.sendRobotCommand('start', payload, {});
-        return { ok: !!ok, simulation: false, error: !ok
+        return { ok: !!ok, simulation: false, attempted: window.__lastRobotApiResult?.motionPossible !== false,
+            seq: window.__lastRobotApiResult?.seq, connectionId: window.__lastRobotApiResult?.connectionId, error: !ok
             ? window.__lastRobotApiResult?.detail || window.__lastRobotApiResult?.message || 'Robot did not accept command'
             : null };
     }
@@ -356,6 +385,8 @@
             this.ended = false;
             this._timer = null;
             this._stopPromise = null;
+            this._controlPending = false;
+            this._automaticStopRetryAt = 0;
         }
 
         getElapsedMs() {
@@ -376,11 +407,26 @@
                 return false;
             }
             if (!robotResult.ok) {
+                // A failed response can follow a successful robot write. Stop
+                // before discarding startup; retain the session if Stop fails.
+                if (robotResult.attempted) {
+                    try {
+                        await this.stop('start_failed');
+                    } catch (error) {
+                        throw new Error(`${robotResult.error || 'Start was not confirmed'}. ${error.message}`);
+                    }
+                }
                 throw new Error(robotResult.error || 'Robot did not accept command');
             }
             this.startedAt = Date.now();
+            this.commandSeq = robotResult.seq;
+            this.connectionId = robotResult.connectionId;
             this._timer = setInterval(() => {
-                if (!this.ended && !this.isPaused && this.getRemainingSec() <= 0) {
+                if (!this.ended && !this.isPaused && !this._stopPromise && this.getRemainingSec() <= 0
+                    && Date.now() >= this._automaticStopRetryAt) {
+                    // Retry unconfirmed expiry Stop without issuing a request
+                    // every tick. Operator Stop remains available immediately.
+                    this._automaticStopRetryAt = Date.now() + 5000;
                     void stopSession('completed');
                 }
                 syncYear65UI();
@@ -406,28 +452,40 @@
         }
 
         async pause() {
-            if (this.ended || this._stopPromise || this.isPaused) return;
-            const ok = await sendRobotControl('pause');
-            if (this.ended || this._stopPromise) return;
-            if (!ok) throw new Error('Robot pause failed');
-            this.isPaused = true;
-            this.pausedAt = Date.now();
-            state.uiMode = 'PAUSED';
-            window.dispatchEvent(new CustomEvent('massageSessionPaused', { detail: { reason: 'soft_stop' } }));
-            syncYear65UI();
+            if (this.ended || this._stopPromise || this.isPaused || this._controlPending) return;
+            this._controlPending = true;
+            try {
+                const ok = await sendRobotControl('pause');
+                if (this.ended || this._stopPromise) return;
+                if (!ok) throw new Error('Robot pause failed');
+                if (window.__lastRobotApiResult?.endpoint === 'pause') this.commandSeq = window.__lastRobotApiResult.seq;
+                this.isPaused = true;
+                this.pausedAt = Date.now();
+                state.uiMode = 'PAUSED';
+                window.dispatchEvent(new CustomEvent('massageSessionPaused', { detail: { reason: 'soft_stop' } }));
+                syncYear65UI();
+            } finally {
+                this._controlPending = false;
+            }
         }
 
         async resume() {
-            if (this.ended || this._stopPromise || !this.isPaused) return;
-            const ok = await sendRobotControl('resume');
-            if (this.ended || this._stopPromise) return;
-            if (!ok) throw new Error('Robot resume failed');
-            this.pausedMs += Math.max(0, Date.now() - this.pausedAt);
-            this.pausedAt = 0;
-            this.isPaused = false;
-            state.uiMode = 'RUNNING';
-            window.dispatchEvent(new CustomEvent('massageSessionResumed', { detail: { reason: 'manual_resume' } }));
-            syncYear65UI();
+            if (this.ended || this._stopPromise || !this.isPaused || this._controlPending) return;
+            this._controlPending = true;
+            try {
+                const ok = await sendRobotControl('resume');
+                if (this.ended || this._stopPromise) return;
+                if (!ok) throw new Error('Robot resume failed');
+                if (window.__lastRobotApiResult?.endpoint === 'resume') this.commandSeq = window.__lastRobotApiResult.seq;
+                this.pausedMs += Math.max(0, Date.now() - this.pausedAt);
+                this.pausedAt = 0;
+                this.isPaused = false;
+                state.uiMode = 'RUNNING';
+                window.dispatchEvent(new CustomEvent('massageSessionResumed', { detail: { reason: 'manual_resume' } }));
+                syncYear65UI();
+            } finally {
+                this._controlPending = false;
+            }
         }
 
         async stop(reason = 'manual') {
@@ -437,18 +495,7 @@
                 window.dispatchEvent(new CustomEvent('massageSessionEndRequested', { detail: { reason } }));
                 const ok = this.simulation === true || await sendRobotControl('stop');
                 if (!ok) throw new Error('Robot stop failed. Session remains active; retry stop.');
-                this.ended = true;
-                if (this._timer) {
-                    clearInterval(this._timer);
-                    this._timer = null;
-                }
-                state.uiMode = 'SETUP';
-                state.session.remainingSec = 0;
-                state.session.totalSec = 0;
-                window.currentMassageSession = null;
-                window.dispatchEvent(new CustomEvent('massageSessionEnded', { detail: { reason } }));
-                resetTeachingVisualsToSetupBaseline();
-                syncYear65UI();
+                this.finish(reason);
             })();
             try {
                 await this._stopPromise;
@@ -464,6 +511,22 @@
             } finally {
                 this._stopPromise = null;
             }
+        }
+
+        finish(reason) {
+            if (this.ended) return;
+            this.ended = true;
+            if (this._timer) {
+                clearInterval(this._timer);
+                this._timer = null;
+            }
+            state.uiMode = 'SETUP';
+            state.session.remainingSec = 0;
+            state.session.totalSec = 0;
+            window.currentMassageSession = null;
+            window.dispatchEvent(new CustomEvent('massageSessionEnded', { detail: { reason } }));
+            resetTeachingVisualsToSetupBaseline();
+            syncYear65UI();
         }
     }
 
@@ -1600,6 +1663,12 @@
         healthTimer = healthTimer || setInterval(refreshRobotHealth, 5000);
 
         window.addEventListener('beforeunload', () => {
+            if (window.currentMassageSession?.simulation !== true
+                && (window.currentMassageSession || pendingMassageStart?.session)) {
+                // Best effort only: controller-side duration remains necessary
+                // when tab/process termination prevents delivery.
+                fetch(`${window.API_URL || ''}/api/stop`, { method: 'POST', keepalive: true }).catch(() => {});
+            }
             if (renderTimer) clearInterval(renderTimer);
             if (healthTimer) clearInterval(healthTimer);
             sttUnsubscribers.forEach((unsubscribe) => {

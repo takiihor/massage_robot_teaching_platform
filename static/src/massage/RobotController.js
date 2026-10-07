@@ -2,6 +2,24 @@ function _getApiUrl() {
     return window.API_URL || '';
 }
 
+async function requestRobot(url, options = {}, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        // Include body parsing in the deadline; headers can arrive before a
+        // stalled or truncated response body.
+        const data = await response.json();
+        return { response, data };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function commandConfirmed(data) {
+    return data?.ok === true || (data?.ok == null && data?.status === 'success');
+}
+
 /*
  * Module: RobotController
  * Purpose: Robot command transport and telemetry helpers.
@@ -57,26 +75,28 @@ export async function sendRobotCommand(endpoint, payload = {}, context = {}) {
                 };
             }
 
-            const response = await fetch(url, {
+            const { response, data } = await requestRobot(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
                 body: body ? JSON.stringify(body) : null
-            });
+            }, endpoint === 'stop' ? 5000 : endpoint === 'start' || modeOverrides[endpoint] ? 20000 : 8000);
             if (!response.ok) {
                 let detail = '';
                 try {
-                    const err = await response.json();
+                    const err = data;
                     detail = err?.detail ? (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail)) : JSON.stringify(err);
                 } catch (e) { /* ignore */ }
                 console.error(`🤖 Robot API error: ${response.status}`, detail);
                 window.__lastRobotApiResult = { endpoint, ok: false, status: response.status, detail };
                 return false;
             }
-            const data = await response.json();
             console.log(`🤖 Robot command ${endpoint}:`, data);
             const message = [data.error || data.message, data.hint].filter(Boolean).join(' ');
-            window.__lastRobotApiResult = { endpoint, ok: data.ok ?? true, status: response.status, message };
-            return data.ok ?? true;
+            window.__lastRobotApiResult = { endpoint, ok: commandConfirmed(data), status: response.status,
+                motionPossible: data.motion_possible !== false,
+                seq: data.seq, connectionId: data.connection_id,
+                message: message || (!commandConfirmed(data) ? 'Robot command was not confirmed' : '') };
+            return commandConfirmed(data);
         } catch (error) {
             console.warn(`⚠️ Robot command ${endpoint} failed:`, error.message);
             window.__lastRobotApiResult = { endpoint, ok: false, status: null, detail: error.message || 'network_error' };
@@ -86,7 +106,7 @@ export async function sendRobotCommand(endpoint, payload = {}, context = {}) {
 
 export async function sendRobotJog(endpoint, payload = {}) {
         try {
-            const response = await fetch(`${_getApiUrl()}${endpoint}`, {
+            const { response, data } = await requestRobot(`${_getApiUrl()}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload || {})
@@ -94,13 +114,12 @@ export async function sendRobotJog(endpoint, payload = {}) {
             if (!response.ok) {
                 let detail = '';
                 try {
-                    const err = await response.json();
+                    const err = data;
                     detail = err?.detail ? (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail)) : JSON.stringify(err);
                 } catch (e) { /* ignore */ }
                 return { ok: false, status: response.status, detail };
             }
-            const data = await response.json();
-            return { ok: data?.ok ?? true, status: response.status, data };
+            return { ok: commandConfirmed(data), status: response.status, data };
         } catch (error) {
             return { ok: false, status: null, detail: error?.message || 'network_error' };
         }
@@ -108,23 +127,22 @@ export async function sendRobotJog(endpoint, payload = {}) {
 
 export async function sendCalibrationCommand(endpoint) {
         try {
-            const response = await fetch(`${_getApiUrl()}${endpoint}`, {
+            const { response, data } = await requestRobot(`${_getApiUrl()}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({})
-            });
+            }, 18000);
             if (!response.ok) {
                 let detail = '';
                 try {
-                    const err = await response.json();
+                    const err = data;
                     detail = err?.detail ? (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail)) : JSON.stringify(err);
                 } catch (e) { /* ignore */ }
                 window.__lastRobotApiResult = { endpoint, ok: false, status: response.status, detail };
                 return { ok: false, status: response.status, detail };
             }
-            const data = await response.json();
-            window.__lastRobotApiResult = { endpoint, ok: data?.ok ?? true, status: response.status, message: data?.message || '' };
-            return { ok: data?.ok ?? true, status: response.status, data };
+            window.__lastRobotApiResult = { endpoint, ok: commandConfirmed(data), status: response.status, message: data?.message || '' };
+            return { ok: commandConfirmed(data), status: response.status, data };
         } catch (error) {
             window.__lastRobotApiResult = { endpoint, ok: false, status: null, detail: error?.message || 'network_error' };
             return { ok: false, status: null, detail: error?.message || 'network_error' };
@@ -133,9 +151,8 @@ export async function sendCalibrationCommand(endpoint) {
 
 export async function fetchTelemetry() {
         try {
-            const response = await fetch(`${_getApiUrl()}/api/telemetry`);
+            const { response, data } = await requestRobot(`${_getApiUrl()}/api/telemetry`);
             if (response.ok) {
-                const data = await response.json();
                 return { ok: true, status: response.status, data };
             }
             return { ok: false, status: response.status };
@@ -150,18 +167,16 @@ export function createRobotEventSource() {
 
 export async function connectRobot(ip) {
         try {
-            const response = await fetch(`${_getApiUrl()}/robot/connect`, {
+            const { response, data } = await requestRobot(`${_getApiUrl()}/robot/connect`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ip })
-            });
+            }, 20000);
             if (!response.ok) {
-                const data = await response.json().catch(() => null);
                 const detail = data?.detail || data?.error || `HTTP ${response.status}`;
                 return { responseOk: false, status: response.status,
                     detail: typeof detail === 'string' ? detail : JSON.stringify(detail) };
             }
-            const data = await response.json();
             return { responseOk: true, status: response.status, data };
         } catch (error) {
             return { responseOk: false, status: null, detail: error?.message || 'network_error' };
@@ -170,16 +185,15 @@ export async function connectRobot(ip) {
 
 export async function disconnectRobot() {
         try {
-            const response = await fetch(`${_getApiUrl()}/robot/disconnect`, { method: 'POST' });
+            const { response, data } = await requestRobot(`${_getApiUrl()}/robot/disconnect`, { method: 'POST' });
             if (!response.ok) {
                 let detail = '';
                 try {
-                    const err = await response.json();
+                    const err = data;
                     detail = err?.detail ? (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail)) : JSON.stringify(err);
                 } catch (e) { /* ignore */ }
                 return { responseOk: false, status: response.status, detail };
             }
-            const data = await response.json();
             return { responseOk: true, status: response.status, data };
         } catch (error) {
             return { responseOk: false, status: null, detail: error?.message || 'network_error' };
@@ -188,12 +202,8 @@ export async function disconnectRobot() {
 
 export async function restoreCalibration() {
         try {
-            const response = await fetch(`${_getApiUrl()}/calibration/restore`, { method: 'POST' });
-            let data = null;
-            try {
-                data = await response.json();
-            } catch (e) { /* ignore */ }
-            return { ok: response.ok, status: response.status, data };
+            const { response, data } = await requestRobot(`${_getApiUrl()}/calibration/restore`, { method: 'POST' }, 13000);
+            return { ok: response.ok && commandConfirmed(data), status: response.status, data };
         } catch (error) {
             return { ok: false, status: null, detail: error?.message || 'network_error' };
         }
@@ -201,12 +211,11 @@ export async function restoreCalibration() {
 
 export async function getCalibrationStatus() {
         try {
-            const response = await fetch(`${_getApiUrl()}/calibration/status`);
+            const { response, data } = await requestRobot(`${_getApiUrl()}/calibration/status`);
             if (!response.ok) {
                 return { ok: false, status: response.status };
             }
-            const data = await response.json();
-            return { ok: true, status: response.status, data };
+            return { ok: response.ok && data?.ok === true, status: response.status, data };
         } catch (error) {
             return { ok: false, status: null, detail: error?.message || 'network_error' };
         }

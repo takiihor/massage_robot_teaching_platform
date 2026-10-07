@@ -52,9 +52,16 @@ test.describe('Scenario Flow Tests', () => {
     await page.addInitScript(() => {
       localStorage.clear();
     });
+    // Scenario playback is explicitly virtual and must never depend on the
+    // server's robot configuration or accidentally send commands to hardware.
+    await page.route('**/robot/state', route => route.fulfill({ json: {
+      connected: false, simulation_enabled: true
+    } }));
+    await page.route(/^https?:\/\/[^/]+\/(?:api\/(?:command|stop)|massage\/[^/?]+|robot\/(?:connect|disconnect|jog\/[^/?]+))(?:\?.*)?$/,
+      route => route.fulfill({ status: 503, json: { ok: false, error: 'Hardware is isolated in scenario tests' } }));
     await page.goto(BASE_URL);
     await page.waitForSelector('#year65App', { timeout: 10000 });
-    await page.waitForFunction(() => window.app && window.APP_STATE, null, { timeout: 10000 });
+    await page.waitForFunction(() => window.__stableSttBound && window.__ARCH_REFACTOR_COMPLETE, null, { timeout: 10000 });
   });
 
   test('loads Scenario 1 and applies baseline vitals after session start', async ({ page }) => {
@@ -223,7 +230,7 @@ test.describe('Scenario Flow Tests', () => {
       expect.stringContaining('Quick Start Mode'),
       expect.stringContaining('語言 / Language'),
       expect.stringContaining('UR10e'),
-      expect.stringContaining('Voice Language')
+      expect.stringContaining('Voice Response Language')
     ]);
   });
 

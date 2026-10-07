@@ -91,13 +91,16 @@ async function createHarness(options = {}) {
     addEventListener() {},
     removeEventListener() {}
   };
-  const navigatorStub = { mediaDevices: { getUserMedia: async () => stream } };
+  const navigatorStub = { mediaDevices: { getUserMedia: options.getUserMedia || (async () => stream) } };
   const context = vm.createContext({
     window,
     document: { addEventListener() {} },
     navigator: navigatorStub,
     WebSocket: FakeWebSocket,
-    fetch: async () => ({ ok: false, json: async () => ({}) }),
+    fetch: options.fetch || (async () => ({ ok: false, json: async () => ({}) })),
+    AbortController,
+    setTimeout: options.setTimeout || setTimeout,
+    clearTimeout: options.clearTimeout || clearTimeout,
     console: { log() {}, warn() {}, error() {} },
     btoa: (binary) => Buffer.from(binary, 'binary').toString('base64'),
     Float32Array,
@@ -117,6 +120,19 @@ async function createHarness(options = {}) {
     setMediaDevices: (value) => { navigatorStub.mediaDevices = value; }
   };
 }
+
+test('a stalled status response body cannot block browser recognition fallback', async () => {
+  const { service } = await createHarness({
+    fetch: async (url, { signal }) => ({ ok: true, json: () => new Promise((resolve, reject) => {
+      if (signal.aborted) reject(new Error('aborted'));
+      else signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    }) }),
+    setTimeout: callback => { queueMicrotask(callback); return 1; },
+    clearTimeout() {}
+  });
+  assert.equal(await service.initialize(), 'browser');
+  assert.equal(service.providers.get('azure-speech-sdk').isAvailable, false);
+});
 
 test('Azure capture uses the native audio rate and sends 16 kHz PCM', async () => {
   const { service, audioContexts, webSockets } = await createHarness();
@@ -139,6 +155,76 @@ test('Azure capture uses the native audio rate and sends 16 kHz PCM', async () =
   const audioMessage = ws.sent.map(JSON.parse).find((message) => message.type === 'audio');
   assert.ok(audioMessage, 'expected an audio WebSocket message');
   assert.equal(Buffer.from(audioMessage.data, 'base64').byteLength, 3200);
+});
+
+test('concurrent STT starts share one microphone and socket', async () => {
+  let resolveMedia;
+  const stream = { getTracks: () => [{ stop() {} }] };
+  const { service, webSockets } = await createHarness({
+    getUserMedia: () => new Promise(resolve => { resolveMedia = resolve; })
+  });
+  service.currentProvider = 'azure-speech-sdk';
+  const first = service.start();
+  const second = service.start();
+  assert.equal(webSockets.length, 1);
+  resolveMedia(stream);
+  await Promise.all([first, second]);
+  assert.equal(service.stats.totalRequests, 1);
+  await service.stop();
+});
+
+test('Stop during microphone permission prevents a late stream from restarting recognition', async () => {
+  let resolveMedia;
+  let stoppedTracks = 0;
+  const { service, audioContexts, webSockets } = await createHarness({
+    getUserMedia: () => new Promise(resolve => { resolveMedia = resolve; })
+  });
+  service.currentProvider = 'azure-speech-sdk';
+  const starting = service.start();
+  await service.stop();
+  resolveMedia({ getTracks: () => [{ stop() { stoppedTracks++; } }] });
+  await starting;
+  assert.equal(service.isListening, false);
+  assert.equal(stoppedTracks, 1);
+  assert.equal(audioContexts.length, 0);
+  assert.equal(webSockets[0].readyState, 3);
+});
+
+test('old socket callbacks cannot stop a fresh recognition session', async () => {
+  const { service, webSockets } = await createHarness();
+  service.currentProvider = 'azure-speech-sdk';
+  await service.start();
+  const oldClose = webSockets[0].onclose;
+  const oldMessage = webSockets[0].onmessage;
+  await service.stop();
+  await service.start();
+  oldClose();
+  oldMessage({ data: JSON.stringify({ type: 'status', state: 'stopped' }) });
+  assert.equal(service.isListening, true);
+  assert.equal(service.providers.get('azure-speech-sdk').ws, webSockets[1]);
+  assert.equal(webSockets[1].readyState, 0);
+  await service.stop();
+});
+
+test('new Start can proceed while a cancelled microphone request is still pending', async () => {
+  const resolutions = [];
+  let oldStopped = 0;
+  const { service, audioContexts, webSockets } = await createHarness({
+    getUserMedia: () => new Promise(resolve => resolutions.push(resolve))
+  });
+  service.currentProvider = 'azure-speech-sdk';
+  const oldStart = service.start();
+  await service.stop();
+  const newStart = service.start();
+  assert.equal(webSockets.length, 2);
+  resolutions[1]({ getTracks: () => [{ stop() {} }] });
+  await newStart;
+  resolutions[0]({ getTracks: () => [{ stop() { oldStopped++; } }] });
+  await oldStart;
+  assert.equal(oldStopped, 1);
+  assert.equal(service.isListening, true);
+  assert.equal(audioContexts.length, 1);
+  await service.stop();
 });
 
 test('STT start rejects with the provider error when all providers fail', async () => {
@@ -346,6 +432,30 @@ test('browser delivers completed phrases before the next interim in the same eve
   await browser.stop();
 });
 
+
+test('old browser recognition callbacks cannot emit commands or restart a replacement', async () => {
+  const { service } = await createHarness();
+  const browser = service.providers.get('browser');
+  const results = [];
+  const errors = [];
+  browser.onResult(result => results.push(result.text));
+  browser.onError(error => errors.push(error));
+  await browser.start('en-US');
+  const previous = browser.recognition;
+  await browser.stop();
+  await browser.start('en-US');
+  let starts = 0;
+  browser.recognition.start = () => { starts++; };
+  previous.onresult({ resultIndex: 0, results: [
+    Object.assign([{ transcript: 'start', confidence: 1 }], { isFinal: true })
+  ] });
+  previous.onerror({ error: 'network' });
+  previous.onend();
+  assert.deepEqual(results, []);
+  assert.deepEqual(errors, []);
+  assert.equal(starts, 0);
+  await browser.stop();
+});
 
 test('startup fallback emits listening status and total failure clears it', async () => {
   const { service } = await createHarness();

@@ -9,13 +9,14 @@ from fastapi import (
     File,
     Form,
 )
-from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, PlainTextResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 from dotenv import load_dotenv
 import time
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import logging
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ import json
 import base64
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Azure Speech SDK for STT (Speech-to-Text) - CRITICAL for voice commands
 try:
@@ -206,7 +208,8 @@ async def lifespan(app: FastAPI):
 
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.run_in_executor(None, _connect_robot)
+                    connect_task = loop.create_task(_run_robot_op(_connect_robot, timeout_s=15.0))
+                    connect_task.add_done_callback(_observe_robot_task)
                 except RuntimeError:
                     threading.Thread(target=_connect_robot, daemon=True).start()
 
@@ -216,9 +219,14 @@ async def lifespan(app: FastAPI):
         pass
     finally:
         try:
-            ur10e_middleware.disconnect()
-        except Exception:
-            pass
+            if ur10e_middleware.rtde_io:
+                stopped = await _run_robot_op(lambda: ur10e_middleware.stop_massage(return_home=False),
+                                              timeout_s=2.0, priority_stop=True)
+                if not stopped.get("ok"):
+                    logger.error("Shutdown Stop was not confirmed: %s", stopped)
+            await _run_blocking_robot_op(ur10e_middleware.disconnect)
+        except Exception as exc:
+            logger.error("Robot shutdown failed: %s", exc)
 
 
 # ===== 創建 FastAPI 實例 =====
@@ -228,6 +236,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request: Request, exc: RequestValidationError):
+    # Pydantic includes the rejected input in its error. A NaN/Infinity input
+    # must still produce 422 instead of crashing Starlette's JSON serializer.
+    details = json.loads(json.dumps(exc.errors(), default=str), parse_constant=lambda token: None)
+    return JSONResponse(status_code=422, content={"detail": details})
+
 # CORS 配置
 app.add_middleware(
     CORSMiddleware,
@@ -236,6 +252,20 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def robot_command_origin(request: Request, call_next):
+    path = request.url.path
+    robot_command = request.method == "POST" and (
+        path.startswith(("/robot/", "/massage/", "/calibration/"))
+        or path in ("/api/command", "/api/stop")
+    )
+    origin = request.headers.get("origin")
+    expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if robot_command and origin and origin not in {expected_origin, *CORS_ALLOWED_ORIGINS}:
+        return JSONResponse(status_code=403, content={"detail": "Robot commands require an allowed browser origin"})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -314,15 +344,8 @@ async def root(request: Request):
             html_content = f.read()
 
     if html_content:
-        # Inject actual host/port/protocol to frontend
+        # Browser origin is authoritative, including IPv6 and proxy ports.
         host = request.url.hostname or "127.0.0.1"
-        try:
-            host_header = (request.headers.get("host") or "").strip()
-            if host_header:
-                # Host header may include port.
-                host = host_header.split(":", 1)[0].strip() or host
-        except Exception:
-            pass
         # 0.0.0.0 is a bind-all address and not reachable from the browser.
         if host in ("0.0.0.0", "::", "[::]"):
             host = "127.0.0.1"
@@ -337,8 +360,10 @@ async def root(request: Request):
             "robot_ip": ur10e_middleware.default_ip,
         }
 
+        config_json = json.dumps(server_config).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
         injection = f"""<script>
-window.SERVER_CONFIG = {json.dumps(server_config)};
+window.SERVER_CONFIG = {config_json};
+window.SERVER_CONFIG.api_url = window.location.origin;
 console.log('🔌 Server config injected:', window.SERVER_CONFIG);
 </script>"""
 
@@ -379,8 +404,8 @@ class MassageCommandRequest(BaseModel):
     body_part: Optional[str] = None
     action: Optional[str] = None
     intensity: Optional[str] = None
-    duration: Optional[int] = None
-    mode: Optional[int] = None
+    duration: Optional[int] = Field(default=None, ge=1, le=1800)
+    mode: Optional[int] = Field(default=None, ge=1, le=4)
     force_assist: Optional[bool] = None
     ip: Optional[str] = None  # Optional override for robot IP
 
@@ -392,11 +417,11 @@ class RobotConnectRequest(BaseModel):
 
 
 class RobotJogRequest(BaseModel):
-    duration_s: Optional[float] = None
+    duration_s: Optional[float] = Field(default=None, gt=0, le=3, allow_inf_nan=False)
 
 
 class SpeedAdjustRequest(BaseModel):
-    delta: float = 0.0
+    delta: float = Field(default=0.0, ge=-1, le=1, allow_inf_nan=False)
 
 
 # ===== Log function =====
@@ -488,12 +513,17 @@ async def robot_disconnect():
     """Disconnect from UR10e."""
 
     def _disconnect():
+        if ur10e_middleware.rtde_io:
+            stopped = ur10e_middleware.stop_massage(return_home=False)
+            if not stopped.get("ok"):
+                return stopped
         ur10e_middleware.disconnect()
-        return True
+        return {"ok": True, "message": "disconnected"}
 
     try:
-        await _run_robot_op(_disconnect, timeout_s=3.0)
-        return {"ok": True, "message": "disconnected"}
+        return await _run_robot_op(_disconnect, timeout_s=4.0, priority_stop=True)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Robot disconnect failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -502,7 +532,7 @@ async def robot_disconnect():
 class LocalModeCommandRequest(BaseModel):
     mode: str
     intensity: Optional[str] = None
-    duration: Optional[int] = None
+    duration: Optional[int] = Field(default=None, ge=1, le=1800)
     force_assist: Optional[bool] = None
 
 
@@ -510,16 +540,25 @@ ROBOT_OPERATION_LOCK = asyncio.Lock()
 ROBOT_STOP_LOCK = asyncio.Lock()
 ROBOT_STOP_GENERATION = 0
 ROBOT_PENDING_STOPS = 0
+ROBOT_STOP_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="robot-stop")
 
 
-async def _run_blocking_robot_op(fn, *args):
+async def _run_blocking_robot_op(fn, *args, priority_stop=False):
     """Run a blocking RTDE call on every supported Python version.
 
     ``asyncio.to_thread`` is only available from Python 3.9, while the deployed
     virtual environment currently uses Python 3.8.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fn, *args)
+    return await loop.run_in_executor(ROBOT_STOP_EXECUTOR if priority_stop else None, fn, *args)
+
+
+def _observe_robot_task(task):
+    # A timed-out request leaves its worker alive. Retrieve late exceptions.
+    if not task.cancelled():
+        exc = task.exception()
+        if exc:
+            logger.error("Robot worker failed: %s", exc)
 
 
 async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool = False,
@@ -530,38 +569,56 @@ async def _run_robot_op(fn, *args, timeout_s: float = 8.0, stop_on_timeout: bool
         # STOP must reach RTDE even while a motion command is waiting for ACK.
         ROBOT_STOP_GENERATION += 1
         ROBOT_PENDING_STOPS += 1
+        async def stop_worker():
+            global ROBOT_PENDING_STOPS
+            try:
+                async with ROBOT_STOP_LOCK:
+                    return await _run_blocking_robot_op(fn, *args, priority_stop=True)
+            finally:
+                ROBOT_PENDING_STOPS -= 1
+
+        task = asyncio.create_task(stop_worker())
+        task.add_done_callback(_observe_robot_task)
         try:
-            async with ROBOT_STOP_LOCK:
-                return await asyncio.wait_for(_run_blocking_robot_op(fn, *args), timeout=timeout_s)
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Robot stop confirmation timed out")
-        finally:
-            ROBOT_PENDING_STOPS -= 1
     if ROBOT_PENDING_STOPS:
         return {"ok": False, "error": "Robot stop confirmation is pending; retry after Stop"}
     generation = ROBOT_STOP_GENERATION
-    async with ROBOT_OPERATION_LOCK:
-        if generation != ROBOT_STOP_GENERATION:
-            return {"ok": False, "error": "Robot operation cancelled by Stop"}
+    abandoned = False
 
-        def invoke():
-            # The executor may itself be queued behind other blocking work.
-            if generation != ROBOT_STOP_GENERATION:
-                return {"ok": False, "error": "Robot operation cancelled by Stop"}
-            return fn(*args)
+    def invoke():
+        # Recheck after both the operation lock and executor queue.
+        if abandoned or generation != ROBOT_STOP_GENERATION or ROBOT_PENDING_STOPS:
+            return {"ok": False, "error": "Robot operation cancelled by Stop or request timeout"}
+        return fn(*args)
 
-        try:
-            return await asyncio.wait_for(_run_blocking_robot_op(invoke), timeout=timeout_s)
-        except asyncio.TimeoutError:
-            logger.error("Robot operation timed out after %.1fs: %s", timeout_s, getattr(fn, "__name__", fn))
-            if stop_on_timeout:
-                try:
-                    await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
-                except Exception as stop_exc:
-                    logger.error("Timeout fallback stop failed: %s", stop_exc)
-            raise HTTPException(
-                status_code=504, detail=f"Operation timed out after {timeout_s:.1f}s"
-            )
+    async def operation_worker():
+        # The worker owns the lock until the actual blocking call returns, even
+        # when its HTTP request times out or disconnects.
+        async with ROBOT_OPERATION_LOCK:
+            return await _run_blocking_robot_op(invoke)
+
+    task = asyncio.create_task(operation_worker())
+    task.add_done_callback(_observe_robot_task)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+        if stop_on_timeout and isinstance(result, dict) and result.get("ok") is False and result.get("seq") is not None:
+            # A missing ACK does not establish that the robot never moved.
+            await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
+        return result
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        abandoned = True
+        if stop_on_timeout:
+            try:
+                await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
+            except Exception as stop_exc:
+                logger.error("Timeout fallback stop failed: %s", stop_exc)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.error("Robot operation timed out after %.1fs: %s", timeout_s, getattr(fn, "__name__", fn))
+        raise HTTPException(status_code=504, detail=f"Operation timed out after {timeout_s:.1f}s")
 
 
 @app.get("/healthz")
@@ -575,6 +632,8 @@ async def robot_state():
     state = ur10e_middleware.get_state_snapshot()
     return {
         "connected": ur10e_middleware.connected,
+        "connection_id": ur10e_middleware.connection_id,
+        "neutralized_connection_id": ur10e_middleware.neutralized_connection_id,
         "simulation_enabled": MASSAGE_SIMULATION_MODE,
         "ip": ur10e_middleware._ip or ur10e_middleware.default_ip,
         "state": state,
@@ -612,6 +671,7 @@ async def robot_jog_z_up(req: Optional[RobotJogRequest] = None):
             "z_up",
             (req.duration_s if req else None),
             timeout_s=6.0,
+            stop_on_timeout=True,
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -635,6 +695,7 @@ async def robot_jog_z_down(req: Optional[RobotJogRequest] = None):
             "z_down",
             (req.duration_s if req else None),
             timeout_s=6.0,
+            stop_on_timeout=True,
         )
         if not result.get("ok"):
             raise HTTPException(
@@ -674,7 +735,9 @@ async def local_mode_command(req: LocalModeCommandRequest):
         duration=req.duration,
         force_assist=req.force_assist,
     )
-    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=4.0, stop_on_timeout=True)
+    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=15.0, stop_on_timeout=True)
+    result["motion_possible"] = result.get("ok") is True or result.get("seq") is not None
+    result["connection_id"] = ur10e_middleware.connection_id
     return result
 
 
@@ -701,7 +764,9 @@ async def massage_start(req: MassageCommandRequest):
         duration=req.duration,
         force_assist=req.force_assist,
     )
-    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=6.0, stop_on_timeout=True)
+    result = await _run_robot_op(ur10e_middleware.start_massage, command, timeout_s=15.0, stop_on_timeout=True)
+    result["motion_possible"] = result.get("ok") is True or result.get("seq") is not None
+    result["connection_id"] = ur10e_middleware.connection_id
     result["connected"] = ur10e_middleware.connected
     return result
 
@@ -718,7 +783,7 @@ async def massage_pause():
 
 @app.post("/massage/resume")
 async def massage_resume():
-    return await _run_robot_op(ur10e_middleware.resume_massage, timeout_s=4.0)
+    return await _run_robot_op(ur10e_middleware.resume_massage, timeout_s=4.0, stop_on_timeout=True)
 
 
 @app.post("/massage/speed_faster")
@@ -772,12 +837,12 @@ async def massage_change_action_acupressure():
 
 @app.post("/massage/extend_duration")
 async def massage_extend_duration():
-    return {"ok": True, "message": "Duration updated for next cycle"}
+    raise HTTPException(status_code=501, detail="Live duration changes are unsupported; select a duration before Start")
 
 
 @app.post("/massage/shorten_duration")
 async def massage_shorten_duration():
-    return {"ok": True, "message": "Duration updated for next cycle"}
+    raise HTTPException(status_code=501, detail="Live duration changes are unsupported; select a duration before Start")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -985,6 +1050,7 @@ async def websocket_stt_stream(websocket: WebSocket):
     language = "zh-HK"
     recognizer = None
     audio_stream = None
+    result_task = None
     is_running = False
     result_queue = asyncio.Queue()
     main_loop = asyncio.get_running_loop()
@@ -1161,6 +1227,12 @@ async def websocket_stt_stream(websocket: WebSocket):
         logger.error(f"STT WebSocket error: {e}")
     finally:
         is_running = False
+        if result_task:
+            result_task.cancel()
+            try:
+                await result_task
+            except asyncio.CancelledError:
+                pass
         if recognizer:
             try:
                 await asyncio.get_running_loop().run_in_executor(
@@ -1464,7 +1536,7 @@ async def stt_transcribe_health():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 5033))
     # Force HTTP for local WSL + Windows development; do not enable SSL even if certs exist.
     protocol = "http"
 
@@ -1475,7 +1547,7 @@ if __name__ == "__main__":
     print("Press Ctrl+C to stop.")
 
     run_options = {
-        "host": "0.0.0.0",
+        "host": os.getenv("HOST", "127.0.0.1"),
         "port": port,
         "reload": False,
         "access_log": False,

@@ -17,7 +17,7 @@ cd massage_robot_teaching_platform
 `build.sh` prepares the local runtime:
 
 - creates or updates `venv`
-- installs Python dependencies from `requirements.txt`
+- installs Python dependencies from `requirements.lock.txt` (Python 3.12 on Linux)
 - installs Node dependencies with `npm ci`
 - installs Playwright Chromium for E2E tests
 - creates `.env` from `.env.example` if `.env` is missing
@@ -42,7 +42,14 @@ Default port is `5033`. You can override it in `.env`:
 
 ```bash
 PORT=5033
+HOST=127.0.0.1
 ```
+
+The server binds to loopback by default. Set `HOST` explicitly for access from
+another computer. The control API needs authentication and a protected network
+before shared access; the instructor PIN and browser origin checks do not provide
+API authentication. Set `AUTO_CONNECT_RTDE=0` to disable automatic robot connection,
+or `MASSAGE_SIMULATION_MODE=1` for an explicitly simulated teaching session.
 
 ## Start
 
@@ -74,7 +81,9 @@ restarting the backend does not update the robot's loaded script.
 This is the repository's only `.urs` program. The backend requests actions via
 RTDE registers and does not load script files from the repository automatically.
 
-Mode 4 saves the starting TCP pose once per start command. Every station and
+The backend captures its home pose after a confirmed stationary Stop and preserves
+it across reconnections to the same robot. Mode 4 saves the starting TCP pose once
+per start command. Every station and
 return lift uses that same TCP reference frame, and each completed batch returns
 to the exact starting pose without endpoint blending. Physical lift is TCP -Z
 for the downward-facing tool used by this demo. Confirm the selected TCP matches
@@ -111,12 +120,27 @@ Current demo behavior:
 
 - The UI's intensity selection does not change the RG2 gripping force: the demo
   uses its script constants and the UI sends `force_assist: false`.
-- The UI timer sends Stop when the selected duration expires. Keep the demo tab
-  open and active until Stop is confirmed; the mode-4 script repeats until it
-  receives Stop/Pause and does not enforce the duration independently.
+- The controller enforces the selected duration (1–1800 seconds) independently
+  of the browser. Paused time does not consume that duration. The browser also
+  sends Stop when its timer expires.
+- A backend heartbeat changes double input register 21 every 250 ms. If it stops
+  changing for 3 seconds during motion, pause, or home return, the updated script
+  cancels the action, requests gripper release, and disarms without return travel.
+  This is separate from integer register 21, which carries session duration.
+- The force guard checks the magnitude of all three force axes during arm,
+  gripper, and return actions. A force fault also releases and disarms without
+  recovery travel. These guards require controller and hardware validation.
 - An unconfirmed robot Stop leaves the UI session active for retry. Automatic
   reconnection sends Stop and resynchronizes command sequences; it does not
-  resume massage automatically.
+  resume massage automatically. The browser also observes confirmed controller
+  completion and safety faults without issuing another travel command.
+- A normal Stop can initiate the existing home-return path. Stop acknowledgement
+  means the massage action was interrupted; `return_home_pending` and controller
+  state 3 indicate that return travel is still in progress. A new Start is rejected
+  while running, paused, or returning home.
+- The backend preserves the pendant speed slider. Live speed and duration changes
+  are unsupported and return errors. Calibration and jog commands require a host
+  script that implements them; the bundled demo rejects those commands.
 - Spoken Stop is handled on interim recognition, including "please stop". It
   interrupts pending Start requests and bypasses ordinary backend operations.
   The host script polls Stop/Pause every 20 ms while arm or gripper actions run,
@@ -135,9 +159,18 @@ Current demo behavior:
 
 ```bash
 npm test
-npm run test:e2e
-venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+AUTO_CONNECT_RTDE=0 ENABLE_AZURE_SPEECH_STT=false venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+PATH="$PWD/venv/bin:$PATH" PORT=15033 TEST_START_SERVER=1 npm run test:e2e -- --workers=2
 ```
 
-The robot reference-frame tests execute the script's motion logic with simulated
-poses; they do not validate controller dynamics or physical robot movement.
+The browser command starts an isolated server with robot auto-connect and cloud
+speech disabled. Without `TEST_START_SERVER=1`, E2E tests use the existing server
+selected by `TEST_URL` or the configured port.
+
+The reliability workflow runs Python, JavaScript, scenario, browser, and dependency
+audit checks on pushes and pull requests. The robot tests execute control flow
+with simulated poses and RTDE interfaces; they do not compile the script in
+PolyScope or validate controller dynamics and physical movement.
+
+Read the [deep reliability review](docs/reviews/2026-10-07-reliability.md) for the
+fixes, remaining risks, and required controller/hardware acceptance checks.
