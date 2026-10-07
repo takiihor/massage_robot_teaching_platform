@@ -172,6 +172,31 @@ export function attachModuleGlobals() {
         }
     }
 
+    // Keep progression visible after a session ends. Scenario audio/timers can
+    // emit late updates, which must not restart the displayed clock.
+    let progressionSessionEnded = false;
+    function resetProgressionDisplay(status = 'READY') {
+        const container = document.getElementById('y65VirtualTimeContainer');
+        if (container) container.style.display = '';
+        const chip = document.getElementById('y65VirtualTimeChip');
+        if (chip) chip.dataset.timerStatus = status;
+        const text = document.getElementById('y65VirtualTimeText');
+        if (text) text.textContent = '00:00';
+        const label = document.getElementById('y65VirtualTimeLabel');
+        if (label) label.textContent = 'Progression Time / 進行時間';
+        const statusEl = document.getElementById('y65VirtualTimeStatus');
+        if (statusEl) statusEl.textContent = status;
+    }
+    resetProgressionDisplay();
+    window.addEventListener('massageSessionStarted', () => {
+        progressionSessionEnded = false;
+        resetProgressionDisplay();
+    });
+    window.addEventListener('massageSessionEnded', () => {
+        progressionSessionEnded = true;
+        resetProgressionDisplay('STOPPED');
+    });
+
     // Virtual time chip display
     document.addEventListener('scenarioVirtualTimeUpdate', (e) => {
         const {
@@ -187,7 +212,10 @@ export function attachModuleGlobals() {
         const labelEl = document.getElementById('y65VirtualTimeLabel');
         const statusEl = document.getElementById('y65VirtualTimeStatus');
         if (!container) return;
-        if (!active) { container.style.display = 'none'; return; }
+        if (progressionSessionEnded || !active) {
+            resetProgressionDisplay(progressionSessionEnded ? 'STOPPED' : 'READY');
+            return;
+        }
         container.style.display = '';
         chip.dataset.timerStatus = status;
         if (labelEl) labelEl.textContent = label;
@@ -205,12 +233,6 @@ export function attachModuleGlobals() {
         if (statusEl) {
             statusEl.textContent = status;
         }
-    });
-
-    // Fallback: hide timer container when session ends (ensures cleanup even if scenario controller misses the event)
-    document.addEventListener('massageSessionEnded', () => {
-        const container = document.getElementById('y65VirtualTimeContainer');
-        if (container) container.style.display = 'none';
     });
 
     // Voice selector persistence

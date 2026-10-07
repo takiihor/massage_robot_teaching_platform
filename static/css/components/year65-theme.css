@@ -125,6 +125,58 @@ body {
   pointer-events: auto;
 }
 
+#year65App .y65-robot-warning {
+  position: relative;
+  max-width: 220px;
+}
+
+#year65App .y65-topbar .y65-robot-warning > summary {
+  border: 1px solid var(--monitor-color-warning);
+  background: #292016;
+  color: var(--monitor-color-warning);
+  cursor: pointer;
+  list-style: none;
+}
+
+#year65App .y65-robot-warning > summary::-webkit-details-marker {
+  display: none;
+}
+
+#year65App #robotWarningLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#year65App .y65-robot-warning-detail {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(320px, calc(100vw - 24px));
+  padding: 12px 14px;
+  border: 1px solid var(--monitor-color-warning);
+  border-radius: var(--y65-radius-md);
+  background: #292016;
+  color: var(--monitor-text-1);
+  box-shadow: var(--monitor-shadow);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#year65App .y65-robot-warning[hidden] {
+  display: none;
+}
+
+#year65App .y65-robot-warning p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+#year65App .y65-robot-warning-hint {
+  color: var(--monitor-text-2);
+  font-size: 12px;
+}
+
 #year65App .y65-topbar .status-badge {
   display: inline-flex;
   align-items: center;

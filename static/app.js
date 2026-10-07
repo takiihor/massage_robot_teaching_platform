@@ -121,6 +121,87 @@
         return !!state.connection.connected;
     }
 
+    function setRobotWarning(warning) {
+        const changed = JSON.stringify(state.connection.warning) !== JSON.stringify(warning);
+        state.connection.warning = warning;
+        const banner = $('robotWarning');
+        if (!banner) return;
+        banner.hidden = !warning;
+        if (!warning) banner.open = false;
+        if (!changed) return; // Avoid repeating the same accessible alert on every poll.
+        banner.dataset.warningCode = warning?.code || '';
+        const labels = {
+            INVALID_FORCE: 'Robot: Invalid force (NaN)', INVALID_POSE: 'Robot: Invalid position',
+            STALE_TELEMETRY: 'Robot: Stale readings', DISCONNECTED: 'Robot: Disconnected',
+            API_UNAVAILABLE: 'Robot: Unavailable', PROGRAM_STOPPED: 'Robot: Program stopped',
+            SAFETY_STOP: 'Robot: Safety stop', TELEMETRY_ERROR: 'Robot: Telemetry error'
+        };
+        if ($('robotWarningLabel')) $('robotWarningLabel').textContent = warning
+            ? labels[warning.code] || (warning.code?.startsWith('CONTROLLER_')
+                ? `Robot: Error ${warning.code.slice('CONTROLLER_'.length)}` : 'Robot: Warning') : '';
+        if ($('robotWarningToggle')) $('robotWarningToggle').title = warning
+            ? `${warning.title}. ${warning.message} ${warning.hint || ''}` : '';
+        for (const [id, key] of [['robotWarningTitle', 'title'], ['robotWarningMessage', 'message'], ['robotWarningHint', 'hint']]) {
+            if ($(id)) $(id).textContent = warning?.[key] || '';
+        }
+    }
+
+    function robotWarningFromHealth(data) {
+        if (data.connected !== true) {
+            if (data.simulation_enabled === true
+                && (!window.currentMassageSession || window.currentMassageSession.simulation === true)
+                && !pendingMassageStart?.session) return null;
+            return { code: 'DISCONNECTED', title: 'Robot disconnected',
+                message: 'Connect the robot before starting a physical massage.',
+                hint: 'You can still select mode, intensity, and duration. Open Settings to connect.' };
+        }
+        const robot = data.state || {};
+        const measurement = robot.measurement_error;
+        const force = robot.actual_TCP_force;
+        // Support servers that serialize non-finite readings as null but do
+        // not yet include the structured measurement diagnostic.
+        const invalidForce = Array.isArray(force) && (force.length !== 6 || force.some(value => !Number.isFinite(value)));
+        if (measurement?.code === 'INVALID_FORCE' || invalidForce) {
+            const components = measurement?.invalid_components || ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz'].filter((_, index) => !Number.isFinite(force?.[index]));
+            return { code: 'INVALID_FORCE', title: 'Invalid robot force readings (NaN / Infinity)',
+                message: `Start and Resume are blocked.${components.length ? ` Affected readings: ${components.join(', ')}.` : ''}`,
+                hint: 'Check the pendant. Retry Start after valid readings return. Stop remains available.' };
+        }
+        if (measurement) {
+            return { code: measurement.code, title: 'Robot measurements unavailable',
+                message: measurement.error, hint: measurement.hint };
+        }
+        const code = robot.urscript_state?.error_code;
+        if (Number.isInteger(code) && code !== 0) {
+            const messages = {
+                1: 'The robot rejected an unsupported command.',
+                2: 'The robot reported excessive or invalid force.',
+                3: 'The robot host program is not armed.',
+                4: 'The robot rejected the selected duration.',
+                5: 'The robot lost the backend heartbeat.'
+            };
+            return { code: `CONTROLLER_${code}`, title: `Robot controller error (code ${code})`,
+                message: messages[code] || 'The robot reported a controller error.',
+                hint: 'Check the pendant before restarting. Stop remains available.' };
+        }
+        const safety = String(robot.safety_status || '').replace(/^Safetystatus:\s*/i, '').toUpperCase();
+        if (safety && !['NORMAL', 'REDUCED'].includes(safety)) {
+            return { code: 'SAFETY_STOP', title: 'Robot safety state needs attention',
+                message: `Safety status: ${safety}. Start and Resume are blocked.`,
+                hint: 'Check the safety message on the pendant before restarting.' };
+        }
+        if (robot.program_state && !/^PLAYING(?:\s|$)/i.test(robot.program_state)) {
+            return { code: 'PROGRAM_STOPPED', title: 'Robot program is not running',
+                message: 'Start and Resume are blocked.',
+                hint: 'Load the massage host program and press Play on the pendant before retrying Start.' };
+        }
+        if (robot.error) {
+            return { code: 'TELEMETRY_ERROR', title: 'Robot telemetry error', message: robot.error,
+                hint: 'Check the robot connection and pendant before starting.' };
+        }
+        return null;
+    }
+
     async function refreshRobotHealth() {
         const requestId = ++robotHealthRequest;
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -140,6 +221,7 @@
             if (text) text.textContent = state.connection.connected ? 'Robot: Connected' : state.connection.simulation ? 'Robot: Simulation' : 'Robot: Disconnected';
             const dot = $('y65RobotStateDot');
             if (dot) dot.classList.toggle('offline', !state.connection.connected);
+            setRobotWarning(robotWarningFromHealth(data));
             renderRobotConnectionSettings(true);
             const session = window.currentMassageSession;
             const robot = data.state?.urscript_state;
@@ -166,6 +248,9 @@
             const text = $('y65RobotStateText');
             if (text) text.textContent = 'Robot: Connection unavailable';
             $('y65RobotStateDot')?.classList.add('offline');
+            setRobotWarning({ code: 'API_UNAVAILABLE', title: 'Robot connection unavailable',
+                message: 'The backend cannot confirm the robot state.',
+                hint: 'Check the backend and connection. If the robot may be moving, use the pendant to stop it.' });
             renderRobotConnectionSettings(false);
             return null;
         } finally {

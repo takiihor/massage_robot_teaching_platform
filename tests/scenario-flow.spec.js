@@ -113,16 +113,41 @@ test.describe('Scenario Flow Tests', () => {
     await expect(page.locator('.sf-tab-btn.active.s2')).toHaveCount(1);
   });
 
-  test('virtual timer hides when off and shows during active scenario', async ({ page }) => {
+  test('progression timer stays at zero when off and shows during active scenario', async ({ page }) => {
     await openInstructorOverlay(page);
     await openLiveTab(page);
     await page.selectOption('#teachingScenarioSelect', 'off');
-    await expect(page.locator('#y65VirtualTimeContainer')).toBeHidden();
+    await expect(page.locator('#y65VirtualTimeContainer')).toBeVisible();
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('00:00');
 
     await page.selectOption('#teachingScenarioSelect', 'scenario_1');
     await startVirtualSession(page);
     await expect(page.locator('#y65VirtualTimeContainer')).toBeVisible();
     await expect(page.locator('#y65VirtualTimeText')).toContainText('00:00');
+  });
+
+  test('UI Stop resets progression to zero and late scenario updates cannot revive it', async ({ page }) => {
+    await page.evaluate(() => window.nursingScenarioControllerInstance.selectScenario('scenario_1'));
+    await page.click('#y65FrontStartBtn');
+    await expect(page.locator('#y65FrontStopBtn')).toBeVisible();
+    const emitTime = (seconds, active = true) => page.evaluate(({ seconds, active }) => {
+      document.dispatchEvent(new CustomEvent('scenarioVirtualTimeUpdate', {
+        detail: { virtualElapsedSec: seconds, active, status: active ? 'RUNNING' : 'OFF' }
+      }));
+    }, { seconds, active });
+    await emitTime(90);
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('01:30');
+    await page.click('#y65FrontStopBtn');
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('00:00');
+    await expect(page.locator('#y65VirtualTimeStatus')).toHaveText('STOPPED');
+    await emitTime(120);
+    await emitTime(120, false);
+    await expect(page.locator('#y65VirtualTimeContainer')).toBeVisible();
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('00:00');
+    await page.click('#y65FrontStartBtn');
+    await expect(page.locator('#y65FrontStopBtn')).toBeVisible();
+    await emitTime(30);
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('00:30');
   });
 
   test('Scenario 0 starts massage with keyboard expression mode', async ({ page }) => {
@@ -134,7 +159,8 @@ test.describe('Scenario Flow Tests', () => {
     await startVirtualSession(page);
     await expect(page.locator('#y65ScenarioChip')).toContainText('S0');
     await expect(page.locator('#y65ExpressionModeText')).toContainText('Keyboard');
-    await expect(page.locator('#y65VirtualTimeContainer')).toBeHidden();
+    await expect(page.locator('#y65VirtualTimeContainer')).toBeVisible();
+    await expect(page.locator('#y65VirtualTimeText')).toHaveText('00:00');
 
     await page.keyboard.press('2');
     await expect(page.locator('#y65ExpressionPresetText')).toContainText('Mild Anxiety');
