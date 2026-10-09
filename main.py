@@ -39,7 +39,7 @@ except ImportError:
 
 
 # 配置日誌
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
 
 # 載入環境變量
@@ -741,8 +741,15 @@ async def local_mode_command(req: LocalModeCommandRequest):
     return result
 
 
+def _log_robot_stop_request(request):
+    raw_reason = request.headers.get("x-robot-stop-reason", "unspecified")
+    reason = "".join(char if char.isalnum() or char in "_:-" else "_" for char in raw_reason[:80])
+    logger.info("Robot Stop requested via %s (reason=%s)", request.url.path, reason)
+
+
 @app.post("/api/stop")
-async def local_mode_stop():
+async def local_mode_stop(request: Request):
+    _log_robot_stop_request(request)
     return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=2.0, priority_stop=True)
 
 
@@ -772,7 +779,8 @@ async def massage_start(req: MassageCommandRequest):
 
 
 @app.post("/massage/stop")
-async def massage_stop():
+async def massage_stop(request: Request):
+    _log_robot_stop_request(request)
     return await _run_robot_op(ur10e_middleware.stop_massage, timeout_s=4.0, priority_stop=True)
 
 

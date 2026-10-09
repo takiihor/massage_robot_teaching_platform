@@ -80,6 +80,7 @@ class MotionHarness:
         self.source = SCRIPT.read_text()
         self.ns = {}
         exec(self.source.split('# Blocking arm/gripper calls', 1)[0], self.ns)
+        self.ns['FORCE_GUARD_ENABLED'] = force
 
         def move(target, a, v, r):
             if len(self.moves) >= batches * 50:
@@ -233,6 +234,15 @@ class RobotReferenceFrameTest(unittest.TestCase):
         for batch in range(3):
             for _, _, force_active in robot.moves[batch * 15 + 12:(batch + 1) * 15]:
                 self.assertFalse(force_active)
+        self.assert_pose_equal(robot.actual, reference)
+
+    def test_force_mode_is_never_applied_when_force_checking_is_off(self):
+        reference = [0.3, 0.1, 0.35, math.pi, 0, 0]
+        robot = MotionHarness(reference, force=True)
+        robot.ns['FORCE_GUARD_ENABLED'] = False
+        robot.run()
+        self.assertEqual(robot.force_frames, [])
+        self.assertFalse(any(force_active for _, _, force_active in robot.moves))
         self.assert_pose_equal(robot.actual, reference)
 
     def test_stop_and_pause_abort_forward_or_return_without_recovery_movement(self):

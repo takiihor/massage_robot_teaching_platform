@@ -81,9 +81,12 @@ restarting the backend does not update the robot's loaded script.
 This is the repository's only `.urs` program. The backend requests actions via
 RTDE registers and does not load script files from the repository automatically.
 
-The backend captures its home pose after a confirmed stationary Stop and preserves
-it across reconnections to the same robot. Mode 4 saves the starting TCP pose once
-per start command. Every station and
+Each massage Start captures the current TCP pose after a confirmed stationary
+Stop, then uploads it as that session's return target before starting movement.
+A normal Stop releases the gripper, lifts to clearance, and returns to this
+session starting pose. Repositioning before the next Start updates the target;
+reconnecting to the same robot preserves it. Mode 4 saves the starting TCP pose
+once per start command. Every station and
 return lift uses that same TCP reference frame, and each completed batch returns
 to the exact starting pose without endpoint blending. Physical lift is TCP -Z
 for the downward-facing tool used by this demo. Confirm the selected TCP matches
@@ -91,16 +94,69 @@ the installed tool before positioning the starting pose.
 
 The demo currently maps commands 1–4 to the mode-4 movement sequence.
 
+The backend requires the current host script before allowing Start, Resume, or
+jog. An older pendant program displays **Robot: Update required**; Stop remains
+available. Restarting the PC backend does not replace the pendant script.
+
+### Force checking (off — not needed)
+
+The current demo is **position-only**: A → up to A+ → across to B+ → down to B →
+grip → C → C+ and so on. The tool never presses on or contacts the leg, so force
+checking is not needed and **must stay off**:
+
+- `FORCE_GUARD_ENABLED = False` in `robot/ur10e_demo_smooth_27.urs`
+- `FORCE_CHECK_ENABLED = False` in `robot/ur10e_middleware_local_mode.py`
+
+The two settings must match. With both off, force readings never stop, block or
+slow motion: there is no 25 N stop (error 2), no invalid-force stop (error 6),
+no force-based Start/Resume refusal and no force warning badge. Force-mode
+contact (`force_assist`) is refused. Pose, stale-telemetry, heartbeat (error 5),
+Stop, Pause and the home return are unchanged.
+
+Why off: the old design pressed the leg, and the 25 N guard protected that
+contact. On this robot (PolyScope 5.24.0.1219432) the wrist force sensor has
+produced false readings — NaN values, and spikes up to about 25 N along one fixed
+direction while the arm was stationary — which tripped error 2 at random and
+stopped position-only sessions. Collision protection comes from the PolyScope
+safety configuration (force/speed limits and protective stop), which does not
+use these script checks; confirm those limits suit people near the robot. Report
+the sensor spikes to UR or your integrator.
+
+Only re-enable force checking (both settings, then reload the script and restart
+the backend) if the design returns to intended contact *and* the sensor reads
+reliably. The guard code and its tests remain in place for that case. With force
+checking on, errors 2 and 6 latch until an operator Stop, the controller retains
+the triggering force, action, TCP XYZ and session time, and the threshold must
+not be raised or the sensor tared while loaded.
+
+### Position accuracy
+
+Every station is an absolute offset of the TCP pose captured at Start, never of
+the live pose. Each leg ends exactly at its target (no blend) before gripping.
+Only the end-of-batch return blends its lift/travel corners; it still stops
+exactly on the Start pose. Stop returns to the Start pose by lifting to its
+clearance plane, travelling above it and lowering onto it.
+
+Resume does the same before continuing: it opens the gripper, lifts, travels
+above the Start pose, lowers onto it, and restarts the stations from there. A
+pause mid-move therefore no longer shifts the remaining stations by the paused
+offset.
+
+`start.sh` appends timestamped startup markers to `server.log`, and Stop requests
+record their source (manual, voice, timer, scenario completion or page unload).
+Teaching scenarios can end a session before its selected duration; choose
+**Scenario Off (F9)** for a full-duration fixture test.
+
 For a connected demo, open the UI at `http://127.0.0.1:PORT/` on the server
 computer (or use HTTPS on another computer), allow microphone access, and click
 once if the browser requests it. Connect to the pendant IP in Settings, then
 keep the host program PLAYING in PolyScope. RTDE connectivity alone does not
 mean the host program is running.
 
-The dashboard shows a compact robot warning badge to the left of ASR for invalid force readings
-(NaN/Infinity), stale telemetry, controller errors, safety stops, and connection
-failures. Hover for a summary or click the badge for affected force components
-and the next step. Voice
+The dashboard shows a compact robot warning badge to the left of ASR for stale
+telemetry, invalid TCP pose, controller errors, safety stops, and connection
+failures (and for invalid force readings only when force checking is on). Hover
+for a summary or click the badge for the next step. Voice
 settings remain selected after a rejected Start, and Stop remains available.
 Health updates run every five seconds; the warning clears when the reported
 problem clears, without automatically starting the robot. Restart the backend
@@ -136,9 +192,7 @@ Current demo behavior:
   changing for 3 seconds during motion, pause, or home return, the updated script
   cancels the action, requests gripper release, and disarms without return travel.
   This is separate from integer register 21, which carries session duration.
-- The force guard checks the magnitude of all three force axes during arm,
-  gripper, and return actions. A force fault also releases and disarms without
-  recovery travel. These guards require controller and hardware validation.
+- Force checking is off for this position-only demo; see "Force checking".
 - An unconfirmed robot Stop leaves the UI session active for retry. Automatic
   reconnection sends Stop and resynchronizes command sequences; it does not
   resume massage automatically. The browser also observes confirmed controller

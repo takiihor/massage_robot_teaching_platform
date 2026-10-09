@@ -94,7 +94,7 @@ class RobotRecoveryTest(unittest.TestCase):
         self.assertTrue(result['return_home_pending'])
         self.robot._hard_stop_rtde_control.assert_not_called()
 
-    def test_home_pose_is_captured_once_and_uploaded_in_acknowledged_halves(self):
+    def test_home_pose_is_preserved_on_reconnect_and_uploaded_in_acknowledged_halves(self):
         home = [0.3, 0.1, 0.35, 3.14, 0.2, 0.1]
         self.robot.rtde_r = Mock()
         self.robot.rtde_r.getActualTCPPose.return_value = home
@@ -177,6 +177,21 @@ class RobotRecoveryTest(unittest.TestCase):
             self.robot._maybe_reconnect()
         self.assertTrue(self.robot.connected, 'RTDE connectivity alone is not motion confirmation')
         self.assertIsNone(self.robot.neutralized_connection_id)
+        self.robot._capture_home_pose.assert_not_called()
+        self.robot._upload_home_pose.assert_not_called()
+
+    def test_reconnect_to_latched_fault_does_not_overwrite_it_with_home_uploads(self):
+        self.robot._create_rtde_receive = Mock(return_value=Mock())
+        self.robot._resync_sequence_from_robot = Mock()
+        self.robot._neutralize_motion_on_connect = Mock(return_value=dict(ok=True, safety_fault_latched=True))
+        self.robot._capture_home_pose = Mock()
+        self.robot._upload_home_pose = Mock()
+        with patch.object(middleware.socket, 'create_connection'), patch.dict(sys.modules, {
+                'rtde_receive': SimpleNamespace(RTDEReceiveInterface=Mock()),
+                'rtde_io': SimpleNamespace(RTDEIOInterface=Mock(return_value=Mock()))}):
+            self.robot._maybe_reconnect()
+        self.assertTrue(self.robot.connected)
+        self.assertEqual(self.robot.neutralized_connection_id, self.robot.connection_id)
         self.robot._capture_home_pose.assert_not_called()
         self.robot._upload_home_pose.assert_not_called()
 

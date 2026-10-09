@@ -186,6 +186,7 @@ export function createScenarioController(options = {}) {
     const frontScenarioChipEl = document.getElementById('y65ScenarioChip');
 
     let selectedScenarioId = getStoredScenarioId();
+    let runtimeGeneration = 0;
     let activeScenario = null;
     let activeStage = null;
     let decisionWindowOpen = false;
@@ -328,7 +329,12 @@ export function createScenarioController(options = {}) {
         if (completionRequested) return;
         completionRequested = true;
 
-        const finish = () => completeScenario(completionReason);
+        const generation = runtimeGeneration;
+        const finish = () => {
+            // Completion/audio callbacks can outlive a selection or restart.
+            // They must never complete a later scenario or stop its session.
+            if (generation === runtimeGeneration) completeScenario(completionReason);
+        };
         const minDelay = Math.max(0, Number(minDelayMs) || 0);
         const postAudioDelay = Math.max(0, Number(postAudioDelayMs) || 0);
         if (!waitForAudio || !scenarioAudio) {
@@ -502,6 +508,7 @@ export function createScenarioController(options = {}) {
     }
 
     function completeScenario(completionReason) {
+        runtimeGeneration++;
         if (expressionDelayTimer) { clearTimeout(expressionDelayTimer); expressionDelayTimer = null; }
         const totalPausedMs = pauseStartedAt
             ? pausedAccumulatedMs + Math.max(0, Date.now() - pauseStartedAt)
@@ -552,8 +559,8 @@ export function createScenarioController(options = {}) {
             };
             try {
                 const stopping = typeof window.app?.stopSession === 'function'
-                    ? window.app.stopSession('completed')
-                    : window.currentMassageSession.stop?.('completed');
+                    ? window.app.stopSession('scenario_completed')
+                    : window.currentMassageSession.stop?.('scenario_completed');
                 Promise.resolve(stopping).catch(reportStopFailure);
             } catch (error) {
                 reportStopFailure(error);
@@ -569,6 +576,7 @@ export function createScenarioController(options = {}) {
     }
 
     function resetScenarioRuntimeState() {
+        runtimeGeneration++;
         clearTimers();
         activeScenario = null;
         activeStage = null;

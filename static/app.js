@@ -134,7 +134,9 @@
             INVALID_FORCE: 'Robot: Invalid force (NaN)', INVALID_POSE: 'Robot: Invalid position',
             STALE_TELEMETRY: 'Robot: Stale readings', DISCONNECTED: 'Robot: Disconnected',
             API_UNAVAILABLE: 'Robot: Unavailable', PROGRAM_STOPPED: 'Robot: Program stopped',
-            SAFETY_STOP: 'Robot: Safety stop', TELEMETRY_ERROR: 'Robot: Telemetry error'
+            SAFETY_STOP: 'Robot: Safety stop', TELEMETRY_ERROR: 'Robot: Telemetry error',
+            FORCE_LIMIT_EXCEEDED: 'Robot: Force too high', HOST_UPDATE_REQUIRED: 'Robot: Update required',
+            CONTROLLER_2: 'Robot: Force stop', CONTROLLER_6: 'Robot: Invalid force'
         };
         if ($('robotWarningLabel')) $('robotWarningLabel').textContent = warning
             ? labels[warning.code] || (warning.code?.startsWith('CONTROLLER_')
@@ -172,17 +174,39 @@
                 message: measurement.error, hint: measurement.hint };
         }
         const code = robot.urscript_state?.error_code;
+        const diagnostics = robot.urscript_state?.diagnostics;
         if (Number.isInteger(code) && code !== 0) {
             const messages = {
                 1: 'The robot rejected an unsupported command.',
                 2: 'The robot reported excessive or invalid force.',
                 3: 'The robot host program is not armed.',
                 4: 'The robot rejected the selected duration.',
-                5: 'The robot lost the backend heartbeat.'
+                5: 'The robot lost the backend heartbeat.',
+                6: 'The controller returned invalid force readings. The robot stopped and released the gripper.'
             };
+            const fault = diagnostics?.fault;
+            let message = messages[code] || 'The robot reported a controller error.';
+            if ([2, 5, 6].includes(code) && fault) {
+                if (code === 2 && fault.reason === 'overforce') {
+                    message = `The robot stopped because measured force exceeded ${fault.limit_n} N.`;
+                }
+                const detail = [];
+                if (fault.action) detail.push(`during ${fault.action}`);
+                if (Number.isFinite(fault.session_elapsed_s)) detail.push(`at ${fault.session_elapsed_s.toFixed(2)} s`);
+                if (Number.isFinite(fault.force_magnitude_n)) detail.push(`recorded force ${fault.force_magnitude_n.toFixed(1)} N`);
+                if (fault.invalid_components?.length) detail.push(`invalid readings: ${fault.invalid_components.join(', ')}`);
+                if (detail.length) message += ` Recorded ${detail.join('; ')}.`;
+            }
             return { code: `CONTROLLER_${code}`, title: `Robot controller error (code ${code})`,
-                message: messages[code] || 'The robot reported a controller error.',
-                hint: 'Check the pendant before restarting. Stop remains available.' };
+                message,
+                hint: [2, 5, 6].includes(code)
+                    ? 'Check the cause on the pendant, then press Stop to acknowledge the fault before Start. Stop remains available.'
+                    : 'Check the pendant before restarting. Stop remains available.' };
+        }
+        if (diagnostics?.available === false) {
+            return { code: 'HOST_UPDATE_REQUIRED', title: 'Robot program update required',
+                message: 'Load the updated robot/ur10e_demo_smooth_27.urs in the pendant program before starting.',
+                hint: 'Press Play after reloading the script. Stop remains available.' };
         }
         const safety = String(robot.safety_status || '').replace(/^Safetystatus:\s*/i, '').toUpperCase();
         if (safety && !['NORMAL', 'REDUCED'].includes(safety)) {
@@ -233,7 +257,7 @@
                         && data.neutralized_connection_id === data.connection_id && data.connection_id !== session.connectionId))) {
                 // A confirmed controller stop or a neutralized replacement
                 // connection ends this UI session without requesting travel.
-                const fault = [2, 5].includes(robot.error_code);
+                const fault = [2, 5, 6].includes(robot.error_code);
                 session.finish(fault ? 'robot_safety_stop' : 'robot_completed');
                 addSystemMessage(fault
                     ? `Robot safety stop (code ${robot.error_code}). Check the pendant before restarting.`
@@ -452,11 +476,11 @@
             : null };
     }
 
-    async function sendRobotControl(endpoint) {
+    async function sendRobotControl(endpoint, payload = {}) {
         // A lost connection must not turn a physical stop into a simulated success.
         if (window.currentMassageSession?.simulation === true) return true;
         if (!window.RobotController?.sendRobotCommand) return false;
-        return window.RobotController.sendRobotCommand(endpoint);
+        return window.RobotController.sendRobotCommand(endpoint, payload);
     }
 
     class TeachingMassageSession {
@@ -578,7 +602,7 @@
             if (this._stopPromise) return this._stopPromise;
             this._stopPromise = (async () => {
                 window.dispatchEvent(new CustomEvent('massageSessionEndRequested', { detail: { reason } }));
-                const ok = this.simulation === true || await sendRobotControl('stop');
+                const ok = this.simulation === true || await sendRobotControl('stop', { reason });
                 if (!ok) throw new Error('Robot stop failed. Session remains active; retry stop.');
                 this.finish(reason);
             })();
@@ -1752,7 +1776,8 @@
                 && (window.currentMassageSession || pendingMassageStart?.session)) {
                 // Best effort only: controller-side duration remains necessary
                 // when tab/process termination prevents delivery.
-                fetch(`${window.API_URL || ''}/api/stop`, { method: 'POST', keepalive: true }).catch(() => {});
+                fetch(`${window.API_URL || ''}/api/stop`, { method: 'POST', keepalive: true,
+                    headers: { 'X-Robot-Stop-Reason': 'page_unload' } }).catch(() => {});
             }
             if (renderTimer) clearInterval(renderTimer);
             if (healthTimer) clearInterval(healthTimer);
