@@ -225,3 +225,148 @@ long-term reliability, or hardware validation of the updated script.
 These hardware and architecture items remain open even when every automated test
 passes. Preserve the controller stop as the independent operator intervention;
 speech recognition and HTTP are not emergency-stop channels.
+
+## 2026-10-09 force-fault recovery follow-up
+
+Read-only checks confirmed idle action state, error 2, and ACK 12 while the
+pendant host remained PLAYING with safety NORMAL. An independent 100 Hz RTDE
+subscription collected 2,001 finite samples over 20 seconds, with force
+magnitude 0.27–2.95 N and an advancing heartbeat. These were post-stop readings,
+not the triggering force. Retained primary-interface values were consistent
+with a 20 mm / 10 N gripper-close worker interrupted around 24.018 seconds;
+the mapping was inferred from declaration order because the variable-name
+setup packet and exact loaded controller script were unavailable.
+
+The updated host distinguishes measured overload (2) from invalid force (6),
+retains the triggering force/invalid-axis mask, action, TCP XYZ and session time,
+and publishes diagnostics after the existing cancellation/stop/release path.
+The 25 N vector guard and movement parameters are unchanged. The backend blocks
+finite overlimit readings, rejects motion while a safety fault is latched, and
+requires the matching host diagnostic version before motion. Stop remains
+available and uses stationary release for errors 2, 5 and 6. Browser warnings
+show recorded evidence; backend logs survive launcher restarts.
+
+Connection neutralization and automatic arming use a stationary Stop that
+preserves the fault and skips home-pose uploads until acknowledgement. Reconnecting or restarting the
+backend therefore cannot silently acknowledge a latched fault on the updated
+host. Explicit operator Stop remains the acknowledgement path.
+
+Validation passed 94 Python tests, 100 JavaScript tests, 41 scenario behavior and
+134 scenario configuration checks, and 47 targeted Chromium tests. Complete
+script block adaptation, Python compilation, Bash/JavaScript syntax and diff
+checks passed. A read-only native RTDE subscription verified the new recipe and
+getters work with the installed library's actual lower range 12–19.
+
+The operator reloaded the updated pendant script. Read-only RTDE confirmed
+diagnostics version 2026100902, idle state, error 0 and finite low force, also
+confirming the program passed the controller's compilation/startup. After the
+operator confirmed a clear test fixture and their presence at the pendant, the
+backend was restarted and verified healthy with the matching diagnostic version.
+Shutdown/startup sent stationary Stop/release commands; massage Start remains
+under the operator's control. Three operator-started runs returned to idle without
+an observed force fault. The first contained about 95 seconds of active motion;
+8,516 samples including waiting/return captured a peak force of 15.43 N and no
+invalid force samples. The second ended at exactly 180 seconds via a backend
+Stop although its controller duration was 300 seconds; the native capture
+covered its final 50 seconds and return. The operator reported Scenario 1 or 2
+was selected. The third run captured 20,501 samples including waiting/return,
+with about 180 seconds of active motion, a 13.12 N peak and no nonfinite force
+or torque samples. The operator confirmed accelerated scenario progression
+and scenario completion Stops are intentional. These Stops are separate from
+the original force fault, and no full 300-second run was claimed.
+
+Stop requests now log their frontend source, including scenario completion and
+page unload. A regression test also confirmed and fixed an old delayed scenario
+completion callback stopping a new session. Pending callbacks now carry a
+runtime generation and cannot complete a later scenario/session. Expected
+accelerated scenario completion and its Stop behavior remain intact.
+No firmware update was performed. The firmware remains 5.24.0.1219432; [UR 5.26 release notes](https://www.universal-robots.com/articles/ur/release-notes/release-note-software-version-526x/)
+document a rare force/torque calibration-loading fix after an arm reboot, but
+do not establish this incident's cause. The repeated fixture runs did not
+reproduce the original fault. Its exact triggering sample was not retained
+by the previous host, so overload versus controller sensor/calibration failure
+cannot be established retrospectively. Software fault handling and normal
+fixture operation have been verified; a controller sensor fault remains a
+hardware/firmware investigation if invalid readings recur.
+
+## 2026-10-09 session Stop return-target follow-up
+
+The operator reported that manual Stop did not return to the starting position.
+The 14:20:53 Stop was accepted as command 39 with return enabled. Subsequent
+read-only telemetry showed idle state, progress 100, error 0 and the TCP at the
+backend's cached startup home. The backend had reused that target for every
+later session on the same robot, even after the operator repositioned the tool.
+The controller's massage reference pose was fresh, but its Stop return target
+was stale. The pre-Start TCP pose was not retained for that run, so its exact
+displacement from the requested starting position cannot be reconstructed.
+
+Massage Start now refreshes the return target from actual RTDE TCP feedback
+after the stationary arming Stop is acknowledged, then uploads both position
+and orientation before sending the movement command. Reconnects preserve the
+saved session target; Resume does not replace it. Invalid fresh feedback rejects
+Start before home upload or movement. Normal Stop retains the existing open,
+clearance lift, traverse and lower sequence. Errors 2, 5 and 6 still release
+without return travel. This is a backend-only change: the already loaded host
+version 2026100902 supports the required return-pose registers.
+
+Regression coverage runs two sessions from different manually positioned poses,
+uploads each target, and executes the actual script return helpers to verify
+the final move reaches that session's position and orientation. It also checks
+reconnect preservation and invalid-pose rejection.
+
+All 96 Python tests, Python compilation and diff checks passed. The backend
+was restarted while the robot was idle, then verified connected with the
+existing host version 2026100902, safety NORMAL and error 0. The operator
+confirmed a fixture test and manually repositioned the tool about 105.58 mm
+from the backend connection pose. Start at 14:32:11 captured the new TCP pose;
+home position/orientation uploads were acknowledged as commands 45 and 46,
+followed by Start 47. Manual Stop at 14:32:32 was command 48. Read-only native
+RTDE capture observed RETURNING_HOME, then IDLE with progress 100 and error 0
+about 3.4 seconds later. The saved target XYZ was
+[0.434063532, -0.099792527, 0.354141975] m; the settled captured endpoint was
+[0.434076846, -0.099789813, 0.354206657] m. Position discrepancy was 0.0661 mm
+and orientation discrepancy 0.00652 degrees, computed from relative rotations
+to handle rotation-vector sign wrapping. This is controller-reported feedback,
+not an independently measured positioning accuracy claim.
+
+The capture contains 4,865 samples over 98.56 seconds including preparation,
+21.59 seconds of active motion, return and settling. Active peak force was
+5.32 N; no invalid force samples or force fault were observed. Evidence is
+saved locally in `/tmp/massage_stop_return_20261009_capture.json` and
+`/tmp/massage_stop_return_20261009_summary.json`. No new pendant script was
+loaded for this fix. The backend remains running after validation.
+
+## 2026-10-09 position-only design: force checking off
+
+The operator clarified that the current demo is position-only (A → A+ → B+ → B →
+grip → C → C+ …) and never contacts the leg. Force checking is therefore not
+needed and **should stay off**. `FORCE_GUARD_ENABLED = False` in the host script
+and `FORCE_CHECK_ENABLED = False` in the middleware disable the 25 N stop (error
+2), the invalid-force stop (error 6), force-based Start/Resume refusal and the
+force warning; force-mode contact is refused. Heartbeat (error 5), Stop, Pause,
+home return and pose/stale-telemetry checks are unchanged. Host diagnostic
+version is 2026100904; the backend requires the matching script before motion.
+
+Evidence for the decision: at 15:06:15 a session faulted with error 2 4.4 s
+after Start, during the first lift (28.2 N, X/Y/Z ≈ +18/+11/−18 N). Afterwards,
+with the arm stationary (TCP height range 0.10 mm over 20 s), telemetry showed 19
+force spikes up to 25.5 N, each along the same base-frame direction (unit vector
+≈ [0.65, 0.38, −0.66]) and lasting about 0.1–0.4 s. Contact would not produce a
+constant direction while stationary; this indicates a wrist force-sensor or
+signal fault, consistent with the earlier NaN and large raw-wrench offsets. It
+should be reported to UR or the integrator. Collision protection relies on the
+PolyScope safety configuration, which does not use these script checks.
+
+An interim guarded-descent/grip-relief change (version 2026100903) was reverted:
+it assumed contact, slowed the final 15 mm of each descent, and could stop above
+B on a false spike. Motion is again A+ → B+ → B at the original speed.
+
+Position accuracy: Resume previously re-captured the reference from the paused
+TCP pose, shifting every remaining station by the paused offset (up to 50 mm).
+Resume now opens the gripper, lifts to the clearance plane, travels above the
+pose captured at Start, lowers onto it, and restarts the stations from there.
+Stop's return uses the same shared path. 102 Python tests passed, including the
+paused-mid-lift case and checks that force readings (26 N, NaN, infinity) never
+stop motion with checking off. The guard code remains tested with checking on.
+Not yet validated on the controller: reload the script, save the program,
+restart the backend, and verify the station positions on a fixture.

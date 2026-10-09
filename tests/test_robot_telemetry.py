@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from robot.ur10e_middleware_local_mode import Telemetry, UR10eMiddlewareLocalMode
 
@@ -21,6 +21,7 @@ class RobotTelemetryTest(unittest.TestCase):
         self.robot._latest = dict(telemetry=self.telemetry, rtde_connected=True,
                                   urscript=dict(ok=True, state=0, ack_seq=21))
 
+    @patch('robot.ur10e_middleware_local_mode.FORCE_CHECK_ENABLED', True)
     def test_nonfinite_force_and_speed_do_not_break_status_or_stream(self):
         self.telemetry.ft = (float('nan'), float('inf'), -float('inf'), 0.1, 0.2, 0.3)
         self.telemetry.speed_scaling = float('nan')
@@ -45,8 +46,10 @@ class RobotTelemetryTest(unittest.TestCase):
         self.assertEqual(state['state']['actual_TCP_force'], [None, None, None, 0.1, 0.2, 0.3])
         self.assertEqual(state['state']['measurement_error'], tel['measurement_error'])
 
+    @patch('robot.ur10e_middleware_local_mode.FORCE_CHECK_ENABLED', True)
     def test_ui_force_warning_matches_motion_rejection_and_clears_on_recovery(self):
         self.robot.rtde_io = Mock()
+        self.robot.read_urscript_registers = Mock(return_value=dict(ok=True, error_code=0, diagnostics=dict(available=True)))
         self.robot.dashboard = SimpleNamespace(program_state=lambda: 'PLAYING', safety_status=lambda: 'NORMAL')
         self.telemetry.ft = (float('nan'), 0, 0, 0, 0, 0)
         warning = self.robot.get_state_snapshot()['measurement_error']

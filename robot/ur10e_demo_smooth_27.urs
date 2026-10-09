@@ -15,11 +15,23 @@ IN_HEARTBEAT = 21 # double register; backend increments every 250ms
  # IN_FORCE_ENABLE register not used here (RTDE IO supports only 18-22)
 
 OUT_STATE = 12 # 0=IDLE, 1=RUNNING, 2=PAUSED, 3=RETURNING_HOME
-OUT_ERROR_CODE = 13 # 0=OK, 1=Unknown, 2=Force, 3=Unarmed, 4=Duration, 5=Heartbeat
+OUT_ERROR_CODE = 13 # 0=OK, 1=Unknown, 2=Overforce, 3=Unarmed, 4=Duration, 5=Heartbeat, 6=Invalid force
 OUT_CURRENT_MODE = 14
 OUT_PROGRESS = 15
 OUT_ACK_SEQ = 16
 OUT_CAL_STATUS = 17
+# Fault record: separate integer and float register spaces, all within 12-19.
+OUT_FAULT_REASON = 18 # reason (0..4) + 10 * invalid Fx/Fy/Fz bitmask (1/2/4)
+OUT_FAULT_ACTION = 19 # 0=between actions, 1=arm, 2=close, 3=open, 4=batch return, 5=pause, 6=home return
+OUT_FAULT_FX = 12
+OUT_FAULT_FY = 13
+OUT_FAULT_FZ = 14
+OUT_FAULT_SESSION_S = 15
+OUT_FAULT_TCP_X = 16
+OUT_FAULT_TCP_Y = 17
+OUT_FAULT_TCP_Z = 18
+OUT_DIAGNOSTICS_VERSION = 19
+DIAGNOSTICS_VERSION = 2026100904
 
 STATE_IDLE = 0
 STATE_RUNNING = 1
@@ -39,6 +51,7 @@ ERR_OVERFORCE = 2
 ERR_NOT_ARMED = 3
 ERR_DURATION = 4
 ERR_HEARTBEAT = 5
+ERR_INVALID_FORCE = 6
 HEARTBEAT_TIMEOUT_S = 3.0
 
 # ---------------------------
@@ -67,7 +80,13 @@ MOVE_STEPS_YZ = 1
 # ---------------------------
 # Force control parameters
 # ---------------------------
+# Position-only demo: the tool never touches the limb, so force checking is OFF.
+# The wrist sensor on this robot has produced false readings that tripped error 2.
+# Collision protection comes from the PolyScope safety configuration instead.
+# Only enable together with FORCE_CHECK_ENABLED in the middleware.
+FORCE_GUARD_ENABLED = False
 FZ_HARD_LIMIT = 25.0      # N, force-vector magnitude guard; not a certified safety limit
+FORCE_SAMPLE_ABS_MAX = 1000000.0 # physically implausible readings, including infinity
 FORCE_Z_SPEED_MPS = 0.10 # compliant-axis speed limit in m/s; not a travel-distance limit
 
 # ============================================================
@@ -85,6 +104,10 @@ blocking_return_travel = p[0, 0, 0, 0, 0, 0]
 blocking_return_end = p[0, 0, 0, 0, 0, 0]
 blocking_action_width = 0
 blocking_action_force = 0
+fault_force = p[0, 0, 0, 0, 0, 0]
+fault_pose = p[0, 0, 0, 0, 0, 0]
+fault_session_s = 0.0
+fault_action = 0
 
 thread blocking_action_worker():
   if blocking_action_kind == 1:
@@ -135,23 +158,27 @@ def end_force_safe():
   end_force_mode()
 end
 
-def force_limit_exceeded(force_sample):
+def force_fault_reason(force_sample):
   # Validate each force component before arithmetic. Reject invalid samples
   # and values already beyond the limit without squaring them (overflow).
   local fx = force_sample[0]
   local fy = force_sample[1]
   local fz = force_sample[2]
   if (fx != fx) or (fy != fy) or (fz != fz):
-    return True
+    return 2
+  end
+  # Comparisons reject infinities/corrupt extremes before doing arithmetic.
+  if (fx > FORCE_SAMPLE_ABS_MAX) or (fx < -FORCE_SAMPLE_ABS_MAX) or (fy > FORCE_SAMPLE_ABS_MAX) or (fy < -FORCE_SAMPLE_ABS_MAX) or (fz > FORCE_SAMPLE_ABS_MAX) or (fz < -FORCE_SAMPLE_ABS_MAX):
+    return 2
   end
   if (fx > FZ_HARD_LIMIT) or (fx < -FZ_HARD_LIMIT):
-    return True
+    return 1
   end
   if (fy > FZ_HARD_LIMIT) or (fy < -FZ_HARD_LIMIT):
-    return True
+    return 1
   end
   if (fz > FZ_HARD_LIMIT) or (fz < -FZ_HARD_LIMIT):
-    return True
+    return 1
   end
   # Compare squared magnitude with squared limit; no square root is needed.
   # Keep products and additions separate for unambiguous controller arithmetic.
@@ -161,23 +188,103 @@ def force_limit_exceeded(force_sample):
   local force_sq = fx_sq + fy_sq
   force_sq = force_sq + fz_sq
   local limit_sq = FZ_HARD_LIMIT * FZ_HARD_LIMIT
-  return (force_sq != force_sq) or (force_sq < 0.0) or (force_sq > limit_sq)
+  if (force_sq != force_sq) or (force_sq < 0.0):
+    return 3
+  end
+  if force_sq > limit_sq:
+    return 1
+  end
+  return 0
+end
+
+def force_limit_exceeded(force_sample):
+  return force_fault_reason(force_sample) != 0
+end
+
+def capture_safety_fault(reason, force_sample):
+  # Save the triggering sample before release changes the measured load.
+  # Publish only after cancelling/stopping/releasing, so diagnostics never
+  # introduce register writes ahead of the stop path.
+  global fault_force = force_sample
+  global fault_pose = get_actual_tcp_pose()
+  global fault_session_s = session_elapsed_s
+  local action = 0
+  if return_home_pending:
+    action = 6
+  elif paused_mode > 0:
+    action = 5
+  elif blocking_action_handle != 0:
+    if blocking_action_kind == 1:
+      action = 1
+    elif blocking_action_kind == 3:
+      action = 4
+    elif blocking_action_width == RG2_CLOSE_WIDTH:
+      action = 2
+    else:
+      action = 3
+    end
+  end
+  global fault_action = action
+end
+
+def publish_safety_fault(reason):
+  # Never write NaN/infinity into a register: preserve affected components
+  # in the bitmask and let the backend expose them as null. A finite overload
+  # retains the exact measured values. Commit reason last.
+  local fx = fault_force[0]
+  local fy = fault_force[1]
+  local fz = fault_force[2]
+  local invalid_mask = 0
+  if (fx != fx) or (fx > FORCE_SAMPLE_ABS_MAX) or (fx < -FORCE_SAMPLE_ABS_MAX):
+    fx = 0.0
+    invalid_mask = invalid_mask + 1
+  end
+  if (fy != fy) or (fy > FORCE_SAMPLE_ABS_MAX) or (fy < -FORCE_SAMPLE_ABS_MAX):
+    fy = 0.0
+    invalid_mask = invalid_mask + 2
+  end
+  if (fz != fz) or (fz > FORCE_SAMPLE_ABS_MAX) or (fz < -FORCE_SAMPLE_ABS_MAX):
+    fz = 0.0
+    invalid_mask = invalid_mask + 4
+  end
+  write_output_integer_register(OUT_FAULT_REASON, 0)
+  write_output_integer_register(OUT_FAULT_ACTION, fault_action)
+  write_output_float_register(OUT_FAULT_FX, fx)
+  write_output_float_register(OUT_FAULT_FY, fy)
+  write_output_float_register(OUT_FAULT_FZ, fz)
+  write_output_float_register(OUT_FAULT_SESSION_S, fault_session_s)
+  write_output_float_register(OUT_FAULT_TCP_X, fault_pose[0])
+  write_output_float_register(OUT_FAULT_TCP_Y, fault_pose[1])
+  write_output_float_register(OUT_FAULT_TCP_Z, fault_pose[2])
+  write_output_integer_register(OUT_FAULT_REASON, reason + 10 * invalid_mask)
 end
 
 def overforce_check_and_stop():
+  if not FORCE_GUARD_ENABLED:
+    return False
+  end
   local force_sample = get_tcp_force()
   # Force can point along any base-frame axis when the TCP is rotated.
-  if force_limit_exceeded(force_sample):
+  local fault_reason = force_fault_reason(force_sample)
+  if fault_reason != 0:
+    capture_safety_fault(fault_reason, force_sample)
     cancel_blocking_action()
     end_force_safe()
     stop_motion()
     rg2_open_only()
+    publish_safety_fault(fault_reason)
     global active_mode = 0
     global paused_mode = 0
     global return_home_pending = False
     global system_armed = False
     global safety_fault_latched = True
-    set_outputs(STATE_IDLE, 0, 0, last_seq, ERR_OVERFORCE)
+    local fault_error = ERR_OVERFORCE
+    if fault_reason != 1:
+      fault_error = ERR_INVALID_FORCE
+    end
+    global safety_fault_error = fault_error
+    set_outputs(STATE_IDLE, 0, 0, last_seq, fault_error)
+    textmsg("Massage force fault reason/action: ", [fault_reason, fault_action])
     return True
   end
   return False
@@ -223,10 +330,18 @@ def request_stop():
   rg2_open_only()
   global active_mode = 0
   global paused_mode = 0
-  # duration=-1 is a connection/arming STOP: never initiate travel.
-  global return_home_pending = (read_input_integer_register(IN_DURATION_S) != -1) and (not safety_fault_latched)
-  if read_input_integer_register(IN_DURATION_S) == -1:
+  # -2 neutralizes a connection without acknowledging a latched fault.
+  # -1 is the deliberate stationary acknowledgement/arming STOP.
+  local stop_duration = read_input_integer_register(IN_DURATION_S)
+  global return_home_pending = (stop_duration >= 0) and (not safety_fault_latched)
+  if stop_duration == -1:
     global safety_fault_latched = False
+    global safety_fault_error = ERR_OK
+  end
+  if safety_fault_latched:
+    global system_armed = False
+    set_outputs(STATE_IDLE, 0, 0, last_seq, safety_fault_error)
+    return None
   end
   if return_home_pending:
     set_outputs(STATE_RETURNING_HOME, 0, 0, last_seq, ERR_OK)
@@ -235,30 +350,34 @@ def request_stop():
   end
 end
 
+def approach_from_above(target, prog):
+  # Reach the target's clearance plane along its tool's physical-up axis.
+  # Repeated STOPs or a STOP during a lift must not add another 50mm each time.
+  local target_lifted = pose_trans(target, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
+  local cur = get_actual_tcp_pose()
+  local ux = (target_lifted[0] - target[0]) / RG2_STEP_UP_M
+  local uy = (target_lifted[1] - target[1]) / RG2_STEP_UP_M
+  local uz = (target_lifted[2] - target[2]) / RG2_STEP_UP_M
+  local height = (cur[0] - target[0]) * ux + (cur[1] - target[1]) * uy + (cur[2] - target[2]) * uz
+  local lift_m = RG2_STEP_UP_M - height
+  local lifted = p[cur[0] + ux * lift_m, cur[1] + uy * lift_m, cur[2] + uz * lift_m, cur[3], cur[4], cur[5]]
+  if lift_m > 0:
+    if movel_interruptible(lifted, 0, prog):
+      return True
+    end
+  end
+  if movel_interruptible(target_lifted, 0, prog):
+    return True
+  end
+  return movel_interruptible(target, 0, prog)
+end
+
 def return_home():
   # Open fully before moving. Release and travel remain interruptible.
   if grip_interruptible(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, 0):
     return None
   end
-  # Reach the home clearance plane along the saved tool's physical-up axis.
-  # Repeated STOPs or a STOP during a lift must not add another 50mm each time.
-  home_lifted = pose_trans(home_pose, p[0, 0, -RG2_STEP_UP_M, 0, 0, 0])
-  cur = get_actual_tcp_pose()
-  ux = (home_lifted[0] - home_pose[0]) / RG2_STEP_UP_M
-  uy = (home_lifted[1] - home_pose[1]) / RG2_STEP_UP_M
-  uz = (home_lifted[2] - home_pose[2]) / RG2_STEP_UP_M
-  height = (cur[0] - home_pose[0]) * ux + (cur[1] - home_pose[1]) * uy + (cur[2] - home_pose[2]) * uz
-  lift_m = RG2_STEP_UP_M - height
-  if lift_m > 0:
-    lifted = p[cur[0] + ux * lift_m, cur[1] + uy * lift_m, cur[2] + uz * lift_m, cur[3], cur[4], cur[5]]
-    if movel_interruptible(lifted, 0, 0):
-      return None
-    end
-  end
-  if movel_interruptible(home_lifted, 0, 0):
-    return None
-  end
-  if movel_interruptible(home_pose, 0, 0):
+  if approach_from_above(home_pose, 0):
     return None
   end
   global return_home_pending = False
@@ -269,15 +388,18 @@ def check_session_safety(prog):
   # Poll these while movel/rg_grip workers are blocked as well as between legs.
   if (active_mode > 0) or (paused_mode > 0) or return_home_pending:
     if heartbeat_elapsed_s >= HEARTBEAT_TIMEOUT_S:
+      capture_safety_fault(4, get_tcp_force())
       cancel_blocking_action()
       end_force_safe()
       stop_motion()
       rg2_open_only()
+      publish_safety_fault(4)
       global active_mode = 0
       global paused_mode = 0
       global return_home_pending = False
       global system_armed = False
       global safety_fault_latched = True
+      global safety_fault_error = ERR_HEARTBEAT
       set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_HEARTBEAT)
       return 3
     end
@@ -455,14 +577,21 @@ last_seq = -1
 last_force_x10 = 0
 system_armed = False
 safety_fault_latched = False
+safety_fault_error = ERR_OK
 return_home_pending = False
 # Backend replaces this standalone fallback with its startup pose.
 home_pose = get_actual_tcp_pose()
+# Every station is an offset of the pose captured at Start, including after Resume.
+session_start_pose = get_actual_tcp_pose()
+resume_from_pause = False
 home_xyz = p[0, 0, 0, 0, 0, 0]
 session_duration_s = 0
 session_elapsed_s = 0.0
 heartbeat_elapsed_s = 0.0
 last_heartbeat = read_input_float_register(IN_HEARTBEAT)
+write_output_integer_register(OUT_FAULT_REASON, 0)
+write_output_integer_register(OUT_FAULT_ACTION, 0)
+write_output_float_register(OUT_DIAGNOSTICS_VERSION, DIAGNOSTICS_VERSION)
 
 # Controller time advances independently of blocking arm/gripper calls and the
 # browser's timer. Paused time does not consume the selected session duration.
@@ -539,6 +668,8 @@ while True:
         else:
           active_mode = 4
           paused_mode = 0
+          session_start_pose = get_actual_tcp_pose()
+          resume_from_pause = False
           set_outputs(STATE_RUNNING, active_mode, 0, last_seq, ERR_OK)
         end
 
@@ -558,6 +689,7 @@ while True:
         if paused_mode > 0:
           active_mode = paused_mode
           paused_mode = 0
+          resume_from_pause = True
           set_outputs(STATE_RUNNING, active_mode, 0, last_seq, ERR_OK)
         else:
           # Nothing was paused; treat as idle ack
@@ -585,6 +717,15 @@ while True:
     rz = start_pose[5]
 
     if active_mode == 4:
+      if resume_from_pause:
+        resume_from_pause = False
+        # A pause can stop mid-move. Return to the Start pose so the stations
+        # keep their planned positions instead of shifting by the paused offset.
+        if not grip_interruptible(RG2_OPEN_WIDTH, RG2_OPEN_FORCE, 0):
+          approach_from_above(session_start_pose, 0)
+        end
+      end
+      start_pose = session_start_pose
       # Mode4 runs continuously in batches until STOP/PAUSE/overforce.
       task_frame = start_pose
       while active_mode == 4:
@@ -611,14 +752,13 @@ while True:
             last_force_x10 = fx10
           end
 
-          if fx10 < 0:
+          if (fx10 < 0) and FORCE_GUARD_ENABLED:
             # NOTE: URScript has no built-in abs(); use explicit if/else for safety.
             fz_target = (-fx10) / 10.0
             apply_force_mode_z(task_frame, fz_target)
             if overforce_check_and_stop():
               active_mode = 0
               completed_normally = False
-              set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_OVERFORCE)
               break
             end
           else:
@@ -661,7 +801,6 @@ while True:
           if overforce_check_and_stop():
             active_mode = 0
             completed_normally = False
-            set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_OVERFORCE)
             break
           end
 
@@ -721,14 +860,13 @@ while True:
           last_force_x10 = fx10
         end
 
-        if fx10 < 0:
+        if (fx10 < 0) and FORCE_GUARD_ENABLED:
           # NOTE: URScript has no built-in abs(); use explicit if/else for safety.
           fz_target = (-fx10) / 10.0
           apply_force_mode_z(task_frame, fz_target)
           if overforce_check_and_stop():
             active_mode = 0
             completed_normally = False
-            set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_OVERFORCE)
             break
           end
         else:
@@ -793,7 +931,6 @@ while True:
         if overforce_check_and_stop():
           active_mode = 0
           completed_normally = False
-          set_outputs(STATE_IDLE, 0, prog, last_seq, ERR_OVERFORCE)
           break
         end
 

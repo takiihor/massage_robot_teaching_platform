@@ -47,14 +47,17 @@ test('repeated interim and final Stop share one request until confirmation', asy
   await speak(page, 'start', false);
   await expect.poll(() => page.evaluate(() => window.APP_STATE.uiMode)).toBe('RUNNING');
   let stopCount = 0;
+  let stopReason;
   let confirmStop;
   await page.route('**/api/stop', async route => {
     stopCount++;
+    stopReason = route.request().headers()['x-robot-stop-reason'];
     await new Promise(resolve => { confirmStop = resolve; });
     await route.fulfill({ json: { ok: true } });
   });
   await speak(page, 'stop');
   await expect.poll(() => stopCount).toBe(1);
+  expect(stopReason).toBe('voice_endsession');
   await speak(page, 'stop massage please');
   await speak(page, 'stop', false);
   expect(stopCount).toBe(1);

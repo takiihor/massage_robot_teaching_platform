@@ -158,3 +158,60 @@ test('healthy and teaching simulation modes do not show a robot warning', async 
   await page.evaluate(() => window.app.refreshRobotHealth());
   await expect(page.locator('#robotWarning')).toBeHidden();
 });
+
+test('latched overload displays the recorded trigger after current force returns to normal', async ({ page }) => {
+  const health = healthyState();
+  health.state.urscript_state = {
+    state: 0, error_code: 2, ack_seq: 12,
+    diagnostics: { available: true, fault: {
+      reason: 'overforce', action: 'gripper closing', session_elapsed_s: 24.018,
+      force_n: [0, 0, -31], force_magnitude_n: 31, limit_n: 25, invalid_components: []
+    } }
+  };
+  await page.route('**/robot/state', route => route.fulfill({ json: health }));
+  await page.goto('/');
+  await expect(page.locator('#robotWarningLabel')).toHaveText('Robot: Force stop');
+  await expect(page.locator('#robotWarningMessage')).toContainText('exceeded 25 N');
+  await expect(page.locator('#robotWarningMessage')).toContainText('gripper closing');
+  await expect(page.locator('#robotWarningMessage')).toContainText('24.02 s');
+  await expect(page.locator('#robotWarningMessage')).toContainText('31.0 N');
+  await expect(page.locator('#robotWarningHint')).toContainText('press Stop');
+});
+
+test('invalid-force fault remains visible after sensor recovery and ends the session without travel', async ({ page }) => {
+  let health = healthyState();
+  const stops = [];
+  await page.route('**/robot/state', route => route.fulfill({ json: health }));
+  await page.route('**/api/command', route => route.fulfill({ json: { ok: true, seq: 1, connection_id: 1 } }));
+  await page.route('**/api/stop', route => { stops.push(true); return route.fulfill({ json: { ok: true } }); });
+  await page.goto('/');
+  await page.waitForFunction(() => window.app);
+  await page.evaluate(() => window.app.startMassage());
+  health.state.urscript_state = {
+    state: 0, error_code: 6, ack_seq: 1,
+    diagnostics: { available: true, fault: {
+      reason: 'invalid_force_sample', action: 'gripper closing', session_elapsed_s: 24,
+      force_n: [null, 1, null], force_magnitude_n: null, limit_n: 25, invalid_components: ['Fx', 'Fz']
+    } }
+  };
+  await page.evaluate(() => window.app.refreshRobotHealth());
+  await expect(page.locator('#robotWarningLabel')).toHaveText('Robot: Invalid force');
+  await expect(page.locator('#robotWarningMessage')).toContainText('invalid readings: Fx, Fz');
+  await expect.poll(() => page.evaluate(() => window.currentMassageSession === null)).toBe(true);
+  expect(stops).toHaveLength(0);
+});
+
+test('old pendant program shows an update requirement until the new program reports readiness', async ({ page }) => {
+  const health = healthyState();
+  health.state.urscript_state.diagnostics = { available: false };
+  const starts = [];
+  await page.route('**/robot/state', route => route.fulfill({ json: health }));
+  await page.route('**/api/command', route => { starts.push(true); return route.fulfill({ json: { ok: true } }); });
+  await page.goto('/');
+  await expect(page.locator('#robotWarningLabel')).toHaveText('Robot: Update required');
+  await expect(page.locator('#robotWarningMessage')).toContainText('ur10e_demo_smooth_27.urs');
+  health.state.urscript_state.diagnostics = { available: true, fault: null };
+  await page.evaluate(() => window.app.refreshRobotHealth());
+  await expect(page.locator('#robotWarning')).toBeHidden();
+  expect(starts).toHaveLength(0);
+});

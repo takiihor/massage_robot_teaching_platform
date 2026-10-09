@@ -75,9 +75,11 @@ export async function sendRobotCommand(endpoint, payload = {}, context = {}) {
                 };
             }
 
+            const headers = { 'Content-Type': 'application/json' };
+            if (endpoint === 'stop' && payload.reason) headers['X-Robot-Stop-Reason'] = String(payload.reason);
             const { response, data } = await requestRobot(url, {
                 method,
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: body ? JSON.stringify(body) : null
             }, endpoint === 'stop' ? 5000 : endpoint === 'start' || modeOverrides[endpoint] ? 20000 : 8000);
             if (!response.ok) {

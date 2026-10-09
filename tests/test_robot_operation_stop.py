@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 
 class RobotOperationStopTest(unittest.IsolatedAsyncioTestCase):
     def make_runtime(self):
         source = ast.parse(Path(__file__).resolve().parents[1].joinpath('main.py').read_text())
-        names = {'_run_blocking_robot_op', '_run_robot_op', '_observe_robot_task', 'local_mode_stop', 'massage_stop'}
+        names = {'_run_blocking_robot_op', '_run_robot_op', '_observe_robot_task', '_log_robot_stop_request', 'local_mode_stop', 'massage_stop'}
         nodes = [node for node in source.body if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name in names]
         for node in nodes:
             node.decorator_list = []
@@ -22,7 +22,9 @@ class RobotOperationStopTest(unittest.IsolatedAsyncioTestCase):
                   logger=logging.getLogger(__name__))
         executor = ThreadPoolExecutor(max_workers=1)
         self.addCleanup(executor.shutdown)
-        ns.update(ROBOT_STOP_EXECUTOR=executor, HTTPException=HTTPException)
+        ns.update(ROBOT_STOP_EXECUTOR=executor, HTTPException=HTTPException, Request=Request,
+                  stop_request=SimpleNamespace(headers={'x-robot-stop-reason': 'voice_endsession'},
+                                               url=SimpleNamespace(path='/api/stop')))
         exec(compile(ast.Module(body=nodes, type_ignores=[]), 'main.py', 'exec'), ns)
         return ns
 
@@ -140,8 +142,10 @@ class RobotOperationStopTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(waiting.is_set())
             queued = asyncio.create_task(ns['_run_robot_op'](lambda: called.append('start')))
             await asyncio.sleep(0)
-            for endpoint in ('local_mode_stop', 'massage_stop'):
-                self.assertTrue((await asyncio.wait_for(ns[endpoint](), 0.5))['ok'])
+            with self.assertLogs(ns['logger'], level='INFO') as logs:
+                for endpoint in ('local_mode_stop', 'massage_stop'):
+                    self.assertTrue((await asyncio.wait_for(ns[endpoint](ns['stop_request']), 0.5))['ok'])
+            self.assertTrue(all('reason=voice_endsession' in line for line in logs.output))
             self.assertFalse(busy.done(), 'Stop should complete while the earlier operation remains blocked')
         finally:
             release.set()
@@ -159,7 +163,7 @@ class RobotOperationStopTest(unittest.IsolatedAsyncioTestCase):
             return dict(ok=True)
 
         ns['ur10e_middleware'].stop_massage = pending_stop
-        stopping = asyncio.create_task(ns['local_mode_stop']())
+        stopping = asyncio.create_task(ns['local_mode_stop'](ns['stop_request']))
         try:
             for _ in range(100):
                 if stop_waiting.is_set():

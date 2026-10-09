@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from robot import ur10e_middleware_local_mode as middleware
+from test_robot_action_stop import ActionHarness
 
 
 class RobotReliabilityTest(unittest.TestCase):
@@ -27,7 +28,8 @@ class RobotReliabilityTest(unittest.TestCase):
         self.robot.rtde_io = Mock()
         self.robot._restore_speed_slider = Mock()
         self.robot._force_enable_supported = False
-        self.robot.read_urscript_registers = Mock(return_value=dict(ok=True, state=0, error_code=0, ack_seq=0))
+        self.robot.read_urscript_registers = Mock(return_value=dict(ok=True, state=0, error_code=0, ack_seq=0,
+                                                                 diagnostics=dict(available=True)))
 
     def test_failed_payload_write_never_publishes_command_sequence(self):
         for register in (middleware.IN_SPEED_X100, middleware.IN_FORCE_X10,
@@ -67,6 +69,34 @@ class RobotReliabilityTest(unittest.TestCase):
         self.assertIn(((middleware.IN_DURATION_S, -1), {}),
                       [(call.args, call.kwargs) for call in self.robot.rtde_io.setInputIntRegister.call_args_list])
 
+    def test_force_checking_off_never_blocks_position_motion(self):
+        self.assertFalse(middleware.FORCE_CHECK_ENABLED)
+        source = (Path(__file__).resolve().parents[1] / 'robot/ur10e_demo_smooth_27.urs').read_text()
+        self.assertIn('FORCE_GUARD_ENABLED = False', source)
+        self.configure_robot()
+        self.robot.dashboard = SimpleNamespace(program_state=lambda: 'PLAYING', safety_status=lambda: 'NORMAL')
+        for force in ((float('nan'), 0, 0, 0, 0, 0), (18.5, 11.2, -18.2, 0, 0, 0), (0, 0, 40, 0, 0, 0)):
+            with self.subTest(force=force):
+                self.robot._latest['telemetry'] = middleware.Telemetry(
+                    ts=time.time(), tcp_m=(0.4, 0, 0.3, 0, 0, 0), ft=force, speed_scaling=1)
+                self.assertIsNone(middleware.UR10eMiddlewareLocalMode._measurement_error(self.robot._latest['telemetry']))
+        # Position and freshness checks still apply.
+        self.robot._latest['telemetry'] = middleware.Telemetry(
+            ts=time.time(), tcp_m=(float('nan'), 0, 0.3, 0, 0, 0), ft=(0,) * 6, speed_scaling=1)
+        self.assertEqual(middleware.UR10eMiddlewareLocalMode._measurement_error(self.robot._latest['telemetry'])['code'], 'INVALID_POSE')
+        self.robot._latest['telemetry'] = middleware.Telemetry(
+            ts=time.time() - 3, tcp_m=(0.4, 0, 0.3, 0, 0, 0), ft=(0,) * 6, speed_scaling=1)
+        self.assertEqual(middleware.UR10eMiddlewareLocalMode._measurement_error(self.robot._latest['telemetry'])['code'], 'STALE_TELEMETRY')
+
+    def test_force_assist_is_refused_while_force_checking_is_off(self):
+        self.robot._motion_preflight = Mock(return_value=dict(ok=True))
+        self.robot.read_urscript_registers = Mock(return_value=dict(ok=True, state=0, cal_status=0))
+        self.robot._arm_host_program = Mock(return_value=dict(ok=True))
+        self.robot.send_mode = Mock()
+        result = self.robot.start_massage(middleware.MassageCommand(mode='knead', duration=60, force_assist=True))
+        self.assertFalse(result['ok'])
+        self.robot.send_mode.assert_not_called()
+
     def test_unknown_safety_cannot_allow_motion(self):
         self.configure_robot()
         self.robot._latest['telemetry'] = middleware.Telemetry(
@@ -76,6 +106,7 @@ class RobotReliabilityTest(unittest.TestCase):
         self.robot.dashboard.safety_status = lambda: 'Safetystatus: NORMAL'
         self.assertTrue(self.robot._motion_preflight()['ok'])
 
+    @patch.object(middleware, 'FORCE_CHECK_ENABLED', True)
     def test_bad_or_stale_measurements_block_start_before_any_register_write(self):
         self.configure_robot()
         self.robot.dashboard = SimpleNamespace(program_state=lambda: 'PLAYING', safety_status=lambda: 'NORMAL')
@@ -96,15 +127,75 @@ class RobotReliabilityTest(unittest.TestCase):
         self.robot._latest.pop('telemetry')
         self.assertFalse(self.robot._motion_preflight()['ok'])
 
-    def test_arm_captures_startup_home_only_after_stationary_stop_ack(self):
+    def test_arm_captures_home_only_after_stationary_stop_ack(self):
         self.configure_robot()
         calls = []
         self.robot.send_mode = Mock(side_effect=lambda *args, **kwargs:
             calls.append('stop') or dict(ok=True, seq=1, urscript=dict(state=0)))
-        self.robot._capture_home_pose = Mock(side_effect=lambda: calls.append('pose'))
+        self.robot._capture_home_pose = Mock(side_effect=lambda **kwargs: calls.append('pose'))
         self.robot._upload_home_pose = Mock(side_effect=lambda *args: calls.append('upload') or dict(ok=True))
         self.assertTrue(self.robot._arm_host_program()['ok'])
         self.assertEqual(calls, ['stop', 'pose', 'upload'])
+
+    def test_each_new_session_returns_to_its_start_pose_after_repositioning(self):
+        self.configure_robot()
+        self.robot._ip = 'fake-robot'
+        self.robot.rtde_r = Mock()
+        self.robot.rtde_r.getActualTCPPose.return_value = [0.3, 0.1, 0.35, 3.14, 0, 0]
+        self.robot._capture_home_pose()
+        self.robot._motion_preflight = Mock(return_value=dict(ok=True))
+        self.robot.read_urscript_registers.return_value['cal_status'] = 0
+        self.robot._wait_for_stop_ack = Mock(return_value=dict(ok=True, return_home_pending=True))
+        h = ActionHarness()
+
+        def controller_command(mode, **kwargs):
+            if mode == middleware.CMD_HOME_XYZ:
+                h.ns['home_xyz'] = kwargs['home_values'][:]
+            elif mode == middleware.CMD_HOME_ROTATION:
+                h.ns['home_pose'] = h.ns['home_xyz'] + kwargs['home_values']
+            elif mode == 0:
+                h.registers[h.ns['IN_DURATION_S']] = kwargs['duration_s']
+                h.ns['request_stop']()
+            return dict(ok=True, seq=1, urscript=dict(state=0, current_mode=mode))
+
+        self.robot.send_mode = Mock(side_effect=controller_command)
+        for pose in ([0.4, -0.1, 0.33, 3.14, 0, 0],
+                     [0.42, -0.15, 0.36, 3.13, 0.02, 0]):
+            with self.subTest(start_pose=pose):
+                self.robot.send_mode.reset_mock()
+                self.robot.rtde_r.getActualTCPPose.return_value = pose
+                self.assertTrue(self.robot.start_massage(middleware.MassageCommand(mode='knead', duration=60))['ok'])
+                self.assertEqual([call.args[0] for call in self.robot.send_mode.call_args_list], [0, 7, 8, 4])
+                self.assertEqual(h.ns['home_pose'], pose)
+                # The RTDE pose now represents a displaced massage station.
+                self.robot.rtde_r.getActualTCPPose.return_value = [0.44, -0.2, 0.34, 3.14, 0, 0]
+                self.assertTrue(self.robot.stop_massage()['ok'])
+                h.calls.clear()
+                h.ns['return_home']()
+                moves = [call[1][0] for call in h.calls if call[0] == 'move']
+                self.assertEqual(moves[-1], pose)
+                self.assertEqual(h.calls[-1], ('outputs', (0, 0, 100, 1, 0)))
+                # Reconnecting during a session/return must not replace its target.
+                self.robot._capture_home_pose()
+                self.assertEqual(self.robot._home_pose, pose)
+
+    def test_invalid_fresh_start_pose_cannot_upload_home_or_start_motion(self):
+        self.configure_robot()
+        self.robot._motion_preflight = Mock(return_value=dict(ok=True))
+        self.robot.read_urscript_registers.return_value['cal_status'] = 0
+        self.robot._home_pose = [0.3, 0.1, 0.35, 3.14, 0, 0]
+        self.robot._home_ip = self.robot._ip
+        self.robot.rtde_r = Mock()
+        self.robot.send_mode = Mock(return_value=dict(ok=True, seq=1, urscript=dict(state=0)))
+        for pose in ([float('nan'), 0, 0.3, 0, 0, 0], [0.4, 0, 0.3]):
+            with self.subTest(pose=pose):
+                self.robot.send_mode.reset_mock()
+                self.robot.rtde_r.getActualTCPPose.return_value = pose
+                result = self.robot.start_massage(middleware.MassageCommand(mode='knead', duration=60))
+                self.assertFalse(result['ok'])
+                self.assertIn('return pose', result['error'])
+                self.assertEqual([call.args[0] for call in self.robot.send_mode.call_args_list], [0])
+                self.assertEqual(self.robot._home_pose, [0.3, 0.1, 0.35, 3.14, 0, 0])
 
     def test_arming_cannot_capture_or_upload_home_from_unconfirmed_stationary_state(self):
         self.configure_robot()

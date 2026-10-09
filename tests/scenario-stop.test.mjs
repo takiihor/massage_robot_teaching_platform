@@ -9,6 +9,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(session, app) {
   const handlers = new Map();
+  const timers = new Map();
+  let timerId = 0;
   const messages = [];
   const window = {
     app, currentMassageSession: session,
@@ -18,15 +20,22 @@ function harness(session, app) {
   const context = {
     window, document: { getElementById: () => null, addEventListener() {}, dispatchEvent() {} },
     localStorage: { getItem: () => 'scenario_1', setItem() {} },
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
+    clearTimeout: id => timers.delete(id), setInterval: () => 1, clearInterval() {},
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
-    Audio: class { addEventListener() {} pause() {} play() { return Promise.resolve(); } },
+    Audio: class { ended = true; addEventListener() {} pause() {} play() { return Promise.resolve(); } },
     console
   };
   runInNewContext(source + '\nglobalThis.makeController = createScenarioController;', context);
   const controller = context.makeController({ vitalsMonitor: { applyTeachingPreset() {} }, scenarioSelectEl: null });
   handlers.get('massageSessionStarted')();
-  return { controller, messages, window };
+  const fireDelay = delay => {
+    const entry = [...timers].find(([, timer]) => timer.delay === delay);
+    assert.ok(entry, `Expected pending ${delay} ms timer`);
+    timers.delete(entry[0]);
+    entry[1].callback();
+  };
+  return { controller, messages, window, handlers, fireDelay };
 }
 
 test('scenario completion uses the application Stop handler exactly once', async () => {
@@ -35,8 +44,26 @@ test('scenario completion uses the application Stop handler exactly once', async
   const { controller, messages } = harness(session, { stopSession: async reason => { calls.push(reason); } });
   controller.selectScenario('off');
   await tick();
-  assert.deepEqual(calls, ['completed']);
+  assert.deepEqual(calls, ['scenario_completed']);
   assert.deepEqual(messages, []);
+});
+
+test('completion callback from an earlier scenario cannot stop a newly started session', async () => {
+  const calls = [];
+  const { controller, window, handlers, fireDelay } = harness({}, { stopSession: async reason => calls.push(reason) });
+  fireDelay(60000); // Stage 1.2
+  fireDelay(60000); // Intermediate stage
+  fireDelay(30000); // Final stage, with completion queued 60 seconds later
+  controller.selectScenario('off');
+  await tick();
+  assert.deepEqual(calls, ['scenario_completed']);
+  const newSession = {};
+  window.currentMassageSession = newSession;
+  handlers.get('massageSessionStarted')();
+  fireDelay(60000); // Delayed completion left over from the first scenario
+  await tick();
+  assert.deepEqual(calls, ['scenario_completed']);
+  assert.equal(window.currentMassageSession, newSession);
 });
 
 test('scenario completion handles rejected Stop and preserves the retryable physical session', async () => {

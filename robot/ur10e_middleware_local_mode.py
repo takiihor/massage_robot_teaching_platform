@@ -59,6 +59,19 @@ OUT_CURRENT_MODE = 14
 OUT_PROGRESS = 15
 OUT_ACK_SEQ = 16
 OUT_CAL_STATUS = 17
+OUT_FAULT_REASON = 18
+OUT_FAULT_ACTION = 19
+OUT_FAULT_FLOATS = tuple(range(12, 19))  # Fx/Fy/Fz, session seconds, TCP XYZ
+OUT_DIAGNOSTICS_VERSION = 19
+DIAGNOSTICS_VERSION = 2026100904
+FORCE_HARD_LIMIT_N = 25.0  # MUST match FZ_HARD_LIMIT in the host script.
+# Position-only demo: no intended contact, so force checks are OFF. MUST match
+# FORCE_GUARD_ENABLED in the host script. See README "Force checking".
+FORCE_CHECK_ENABLED = False
+SAFETY_FAULT_CODES = (2, 5, 6)
+FAULT_REASON_TEXT = {1: "overforce", 2: "invalid_force_sample", 3: "invalid_force_arithmetic", 4: "heartbeat_lost"}
+FAULT_ACTION_TEXT = {0: "between actions", 1: "arm movement", 2: "gripper closing", 3: "gripper opening",
+                     4: "batch return", 5: "paused", 6: "home return"}
 
 UR_SCRIPT_ERROR_TEXT = {
     0: "ok",
@@ -67,6 +80,7 @@ UR_SCRIPT_ERROR_TEXT = {
     3: "host program is not armed",
     4: "invalid session duration",
     5: "backend heartbeat lost",
+    6: "invalid controller force reading",
 }
 
 # Optional input float registers used by your URScript for calibration points
@@ -229,6 +243,8 @@ class UR10eMiddlewareLocalMode:
         self._telemetry_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._latest: Dict[str, Any] = {}
+        self._last_fault: Optional[Dict[str, Any]] = None
+        self._last_fault_key = None
         self.connected = False
         self.connection_id = 0
         self.neutralized_connection_id = None
@@ -288,7 +304,7 @@ class UR10eMiddlewareLocalMode:
         self._write_force_enable(False)
         self._resync_sequence_from_robot()
         neutralized = self._neutralize_motion_on_connect()
-        if neutralized.get("ok") and not neutralized.get("return_home_pending"):
+        if neutralized.get("ok") and not neutralized.get("return_home_pending") and not neutralized.get("safety_fault_latched"):
             self._capture_home_pose()
             uploaded = self._upload_home_pose()
             if not uploaded.get("ok"):
@@ -331,20 +347,20 @@ class UR10eMiddlewareLocalMode:
                 return
             stop_evt.wait(0.25)
 
-    def _capture_home_pose(self) -> None:
-        """Latch the first connected pose for this backend process, never on reconnect."""
-        if self._home_pose is not None and self._home_ip == self._ip:
+    def _capture_home_pose(self, refresh: bool = False) -> None:
+        """Capture the session return pose; reconnects preserve the saved target."""
+        if not refresh and self._home_pose is not None and self._home_ip == self._ip:
             return
         pose = list(self.rtde_r.getActualTCPPose())
         if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
-            raise RuntimeError("Robot startup TCP pose is invalid")
+            raise RuntimeError("Robot return TCP pose is invalid")
         self._home_pose = pose
         self._home_ip = self._ip
-        logger.info("Captured backend startup home pose: %s", pose)
+        logger.info("Captured %s return pose: %s", "massage session start" if refresh else "connection", pose)
 
     def _upload_home_pose(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
         if self._home_pose is None:
-            return {"ok": False, "error": "Robot startup home pose has not been captured"}
+            return {"ok": False, "error": "Robot return pose has not been captured"}
         generation = self._stop_generation if expected_stop_generation is None else expected_stop_generation
         for mode, values in ((CMD_HOME_XYZ, self._home_pose[:3]),
                              (CMD_HOME_ROTATION, self._home_pose[3:])):
@@ -353,7 +369,7 @@ class UR10eMiddlewareLocalMode:
             if not result.get("ok"):
                 return result
             if (result.get("urscript") or {}).get("current_mode") != mode:
-                return {"ok": False, "error": "Host does not support startup home; load the updated ur10e_demo_smooth_27.urs"}
+                return {"ok": False, "error": "Host does not support the return pose; load the updated ur10e_demo_smooth_27.urs"}
         return result
 
     def _neutralize_motion_on_connect(self) -> Dict[str, Any]:
@@ -361,13 +377,18 @@ class UR10eMiddlewareLocalMode:
         if not self.rtde_io:
             return {"ok": False, "error": "rtde_io not connected"}
         try:
+            urs = self.read_urscript_registers()
+            current_host = bool((urs.get("diagnostics") or {}).get("available"))
+            # The current host reserves -2 for connection neutralization that
+            # preserves a fault. Legacy hosts only understand -1 as no-travel.
+            stop_duration = -2 if current_host else -1
             seq = self._next_seq()
             for register, value in ((IN_SPEED_X100, self._speed_scale_x100),
-                                    (IN_FORCE_X10, 0), (IN_DURATION_S, -1),
+                                    (IN_FORCE_X10, 0), (IN_DURATION_S, stop_duration),
                                     (IN_CMD, 0), (IN_CMD_SEQ, seq)):
                 self._write_int_register(register, int(value))
             logger.info("connect: sent startup STOP neutralization seq=%d", seq)
-            return self._wait_for_stop_ack(seq, 0.4)
+            return self._wait_for_stop_ack(seq, 0.4, allow_latched_fault=current_host)
         except Exception:
             logger.warning("connect: failed to send startup STOP neutralization", exc_info=True)
             return {"ok": False, "error": "Startup STOP failed"}
@@ -404,6 +425,9 @@ class UR10eMiddlewareLocalMode:
             f"output_int_register_{OUT_PROGRESS}",
             f"output_int_register_{OUT_ACK_SEQ}",
             f"output_int_register_{OUT_CAL_STATUS}",
+            f"output_int_register_{OUT_FAULT_REASON}",
+            f"output_int_register_{OUT_FAULT_ACTION}",
+            *[f"output_double_register_{index}" for index in (*OUT_FAULT_FLOATS, OUT_DIAGNOSTICS_VERSION)],
         ]
 
     def _create_rtde_receive(self, rtde_receive_cls, ip: str):
@@ -513,7 +537,7 @@ class UR10eMiddlewareLocalMode:
             self._start_heartbeat()
             self._resync_sequence_from_robot()
             neutralized = self._neutralize_motion_on_connect()
-            if neutralized.get("ok") and not neutralized.get("return_home_pending"):
+            if neutralized.get("ok") and not neutralized.get("return_home_pending") and not neutralized.get("safety_fault_latched"):
                 self._capture_home_pose()
                 self._upload_home_pose()
             if self._stop_evt.is_set():
@@ -617,6 +641,7 @@ class UR10eMiddlewareLocalMode:
                 if stop_evt.is_set():
                     return
 
+                self._record_safety_fault(tel, urs)
                 with self._lock:
                     self._latest = {
                         "telemetry": tel,
@@ -649,7 +674,7 @@ class UR10eMiddlewareLocalMode:
                 "error": "Fresh robot telemetry is required before motion",
                 "hint": "Check the robot connection. Start and Resume are blocked until fresh readings return.",
             }
-        if len(tel.ft) != 6 or not all(math.isfinite(value) for value in tel.ft):
+        if FORCE_CHECK_ENABLED and (len(tel.ft) != 6 or not all(math.isfinite(value) for value in tel.ft)):
             return {
                 "code": "INVALID_FORCE",
                 "error": "Robot force/torque readings are invalid; motion is blocked",
@@ -663,7 +688,44 @@ class UR10eMiddlewareLocalMode:
                 "error": "Robot TCP pose is invalid; motion is blocked",
                 "hint": "Check the pendant. Start and Resume are blocked until valid position readings return.",
             }
+        if not FORCE_CHECK_ENABLED:
+            return None
+        magnitude = math.hypot(*tel.ft[:3])
+        if magnitude > FORCE_HARD_LIMIT_N:
+            return {
+                "code": "FORCE_LIMIT_EXCEEDED",
+                "error": f"Measured robot force {magnitude:.1f} N exceeds the {FORCE_HARD_LIMIT_N:g} N limit; motion is blocked",
+                "force_magnitude_n": magnitude if math.isfinite(magnitude) else None,
+                "hint": "Remove unexpected contact and check grip, TCP, and payload settings on the pendant before retrying.",
+            }
         return None
+
+    def _record_safety_fault(self, tel: Telemetry, urs: Dict[str, Any]) -> None:
+        """Log each latched fault once, retaining its evidence after Stop/reconnect."""
+        if not urs.get("ok"):
+            return
+        if urs.get("error_code") not in SAFETY_FAULT_CODES:
+            self._last_fault_key = None
+            return
+        key = (self.connection_id, urs.get("ack_seq"), urs.get("error_code"))
+        diagnostics = urs.get("diagnostics") or {}
+        captured = diagnostics.get("fault")
+        key += (bool(captured),)
+        if key == self._last_fault_key:
+            return
+        finite = lambda value: value if math.isfinite(value) else None
+        record = {
+            "observed_at": tel.ts, "robot_ip": self._ip,
+            "ack_seq": urs.get("ack_seq"), "error_code": urs.get("error_code"),
+            "controller_captured": bool(captured), "fault": captured,
+            # Observations after release are explicitly distinct from the trigger.
+            "observed_force_n": [finite(value) for value in tel.ft[:3]],
+            "observed_tcp_xyz_m": [finite(value) for value in tel.tcp_m[:3]],
+        }
+        with self._lock:
+            self._last_fault = record
+        self._last_fault_key = key
+        logger.error("Robot safety fault: %s", json.dumps(record, allow_nan=False))
 
     def get_telemetry(self) -> Dict[str, Any]:
         """UI-friendly dict (safe to JSON serialize)."""
@@ -726,6 +788,7 @@ class UR10eMiddlewareLocalMode:
             "robot_mode": tel.robot_mode,
             "safety_status": tel.safety_status,
             "urscript": urs,
+            "last_fault": self._last_fault,
         }
 
     def get_state_snapshot(self) -> Dict[str, Any]:
@@ -762,7 +825,9 @@ class UR10eMiddlewareLocalMode:
                 "progress": tel.get("urscript", {}).get("progress"),
                 "ack_seq": tel.get("urscript", {}).get("ack_seq"),
                 "calibration_status": tel.get("urscript", {}).get("cal_status"),
+                "diagnostics": tel.get("urscript", {}).get("diagnostics"),
             },
+            "last_fault": tel.get("last_fault"),
             "rtde_connected": tel.get("rtde_connected"),
         }
 
@@ -783,6 +848,7 @@ class UR10eMiddlewareLocalMode:
             current_mode = int(self.rtde_r.getOutputIntRegister(OUT_CURRENT_MODE))
             progress = int(self.rtde_r.getOutputIntRegister(OUT_PROGRESS))
             cal_status = int(self.rtde_r.getOutputIntRegister(OUT_CAL_STATUS))
+            diagnostics = self._read_fault_diagnostics()
             ack_seq = int(self.rtde_r.getOutputIntRegister(OUT_ACK_SEQ))
             if ack_before != ack_seq:
                 return {"ok": False, "error": "Robot register snapshot changed while reading"}
@@ -796,10 +862,43 @@ class UR10eMiddlewareLocalMode:
                 "progress": progress,
                 "ack_seq": ack_seq,
                 "cal_status": cal_status,
+                "diagnostics": diagnostics,
             }
         except Exception as e:
             logger.error("read_urscript_registers FAILED: %s", e)
             return {"ok": False, "error": str(e)}
+
+    def _read_fault_diagnostics(self) -> Dict[str, Any]:
+        """Older hosts remain stoppable; motion requires the matching new host."""
+        unavailable = {"available": False, "required_version": DIAGNOSTICS_VERSION}
+        try:
+            version = float(self.rtde_r.getOutputDoubleRegister(OUT_DIAGNOSTICS_VERSION))
+            if version != DIAGNOSTICS_VERSION:
+                return unavailable
+            marker = int(self.rtde_r.getOutputIntRegister(OUT_FAULT_REASON))
+            result = {"available": True, "version": DIAGNOSTICS_VERSION, "fault": None}
+            if marker == 0:
+                return result
+            reason, invalid_mask = marker % 10, marker // 10
+            action = int(self.rtde_r.getOutputIntRegister(OUT_FAULT_ACTION))
+            values = [float(self.rtde_r.getOutputDoubleRegister(index)) for index in OUT_FAULT_FLOATS]
+            marker_after = int(self.rtde_r.getOutputIntRegister(OUT_FAULT_REASON))
+            if marker != marker_after or reason not in FAULT_REASON_TEXT or action not in FAULT_ACTION_TEXT or not 0 <= invalid_mask <= 7:
+                return {**result, "pending": True}
+            force = [value if math.isfinite(value) and not invalid_mask & (1 << index) else None
+                     for index, value in enumerate(values[:3])]
+            magnitude = math.hypot(*force) if all(value is not None for value in force) else None
+            result["fault"] = {
+                "reason": FAULT_REASON_TEXT[reason], "action": FAULT_ACTION_TEXT[action],
+                "force_n": force, "force_magnitude_n": magnitude if magnitude is not None and math.isfinite(magnitude) else None,
+                "invalid_components": [axis for axis, value in zip(("Fx", "Fy", "Fz"), force) if value is None],
+                "limit_n": FORCE_HARD_LIMIT_N,
+                "session_elapsed_s": values[3] if math.isfinite(values[3]) else None,
+                "tcp_xyz_m": [value if math.isfinite(value) else None for value in values[4:]],
+            }
+            return result
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return unavailable
 
     def _latest_tcp_pose_m(self) -> Optional[Tuple[float, float, float, float, float, float]]:
         # Saving calibration must sample the current RTDE pose, not a cached
@@ -914,12 +1013,9 @@ class UR10eMiddlewareLocalMode:
             return
         try:
             self._write_int_register(IN_FORCE_ENABLE, 1 if enabled else 0)
-        except Exception:
+        except Exception as exc:
             self._force_enable_supported = False
-            logger.warning(
-                "IN_FORCE_ENABLE unsupported; using signed IN_FORCE_X10 encoding",
-                exc_info=True,
-            )
+            logger.info("IN_FORCE_ENABLE unsupported (%s); using signed IN_FORCE_X10 encoding", exc)
 
     def _write_int_register(self, register: int, value: int) -> None:
         if self.rtde_io.setInputIntRegister(register, value) is False:
@@ -975,10 +1071,24 @@ class UR10eMiddlewareLocalMode:
         measurement_error = self._measurement_error(telemetry)
         if measurement_error:
             return {"ok": False, **measurement_error, "dashboard": dashboard}
+        urs = self.read_urscript_registers()
+        if not urs.get("ok"):
+            return {"ok": False, "error": "Fresh controller register feedback is required before motion"}
+        if urs.get("error_code") in SAFETY_FAULT_CODES:
+            return {"ok": False, "code": "LATCHED_SAFETY_FAULT",
+                    "error": f"Robot safety fault remains latched: {UR_SCRIPT_ERROR_TEXT[urs['error_code']]}",
+                    "hint": "Resolve the cause on the pendant, then press Stop to acknowledge it before a new Start.",
+                    "urscript": urs}
+        if not (urs.get("diagnostics") or {}).get("available"):
+            return {"ok": False, "code": "HOST_UPDATE_REQUIRED",
+                    "error": "Load the updated robot/ur10e_demo_smooth_27.urs on the pendant before starting",
+                    "hint": "Restart the backend and reload the updated script in the pendant program, then press Play.",
+                    "urscript": urs}
         return {"ok": True, "dashboard": dashboard}
 
-    def _arm_host_program(self, expected_stop_generation: Optional[int] = None) -> Dict[str, Any]:
-        """Send and confirm the STOP edge required by the local-mode URScript."""
+    def _arm_host_program(self, expected_stop_generation: Optional[int] = None,
+                          refresh_home: bool = False) -> Dict[str, Any]:
+        """Arm through a stationary STOP that cannot acknowledge a safety fault."""
         urs = self.read_urscript_registers()
         if urs.get("state") == STATE_RETURNING_HOME:
             return {"ok": False, "error": "Robot is returning home; wait until it is idle"}
@@ -986,7 +1096,7 @@ class UR10eMiddlewareLocalMode:
             0,
             speed_x100=100,
             force_x10=0,
-            duration_s=-1,
+            duration_s=-2,
             force_enable=False,
             wait_ack=True,
             expected_stop_generation=expected_stop_generation,
@@ -1000,7 +1110,10 @@ class UR10eMiddlewareLocalMode:
         if result.get("ok"):
             if (result.get("urscript") or {}).get("state") != 0:
                 return {"ok": False, "seq": result.get("seq"), "error": "Arming Stop did not confirm an idle robot"}
-            self._capture_home_pose()
+            try:
+                self._capture_home_pose(refresh=refresh_home)
+            except Exception as exc:
+                return {"ok": False, "error": f"Unable to capture robot return pose: {exc}"}
             return self._upload_home_pose(expected_stop_generation)
         return result
 
@@ -1226,11 +1339,13 @@ class UR10eMiddlewareLocalMode:
                     "calibration_status": cal_status,
                     "calibration_status_text": self._calibration_status_to_text(cal_status),
                 }
-        arm_result = self._arm_host_program(expected_stop_generation=generation)
+        arm_result = self._arm_host_program(expected_stop_generation=generation, refresh_home=True)
         if not arm_result.get("ok"):
             return arm_result
         force_x10 = self._resolve_force_x10(command.intensity)
         force_enable = bool(getattr(command, "force_assist", False))
+        if force_enable and not FORCE_CHECK_ENABLED:
+            return {"ok": False, "error": "Force assist is unavailable while force checking is off"}
         return self.send_mode(
             mode_id,
             speed_x100=100,
@@ -1241,15 +1356,19 @@ class UR10eMiddlewareLocalMode:
             expected_stop_generation=generation,
         )
 
-    def _wait_for_stop_ack(self, seq: int, timeout_s: float) -> Dict[str, Any]:
+    def _wait_for_stop_ack(self, seq: int, timeout_s: float, allow_latched_fault: bool = False) -> Dict[str, Any]:
         deadline = time.monotonic() + timeout_s
         urs = {}
         while True:
             urs = self.read_urscript_registers()
             if urs.get("ok") and int(urs.get("ack_seq", -1)) == seq:
-                if int(urs.get("error_code", 0)) != 0:
-                    return {"ok": False, "seq": seq, "error": "Robot rejected stop", "urscript": urs}
+                error_code = int(urs.get("error_code", 0))
                 state = int(urs.get("state", -1))
+                if allow_latched_fault and error_code in SAFETY_FAULT_CODES and state == 0:
+                    return {"ok": True, "seq": seq, "urscript": urs,
+                            "return_home_pending": False, "safety_fault_latched": True}
+                if error_code != 0:
+                    return {"ok": False, "seq": seq, "error": "Robot rejected stop", "urscript": urs}
                 if state in (0, STATE_RETURNING_HOME):
                     return {"ok": True, "seq": seq, "urscript": urs,
                             "return_home_pending": state == STATE_RETURNING_HOME}
@@ -1267,7 +1386,7 @@ class UR10eMiddlewareLocalMode:
             self._stop_generation += 1
         urs = self.read_urscript_registers()
         # Safety faults require a stationary release, not recovery travel.
-        if urs.get("error_code") in (2, 5):
+        if urs.get("error_code") in SAFETY_FAULT_CODES:
             return_home = False
         stop_duration = 0 if return_home else -1
         result = self.send_mode(0, speed_x100=100, force_x10=0, duration_s=stop_duration, force_enable=False, wait_ack=False)
@@ -1291,7 +1410,7 @@ class UR10eMiddlewareLocalMode:
         """
         Send CMD=5 (pause).
         URScript stops motion immediately but remembers the active mode.
-        Call resume_massage() to restart from current pose.
+        resume_massage() returns to the session Start pose before continuing.
         """
         logger.info("pause_massage: Sending CMD=5 (pause)...")
         if not self.rtde_io:
@@ -1301,7 +1420,8 @@ class UR10eMiddlewareLocalMode:
     def resume_massage(self) -> Dict[str, Any]:
         """
         Send CMD=6 (resume).
-        URScript restores the previously paused mode and restarts motion from current TCP pose.
+        URScript opens the gripper, returns to the session Start pose from above,
+        then restarts the station sequence there.
         Returns an error if nothing was paused (URScript will ACK with STATE_IDLE).
         """
         generation = self._stop_generation

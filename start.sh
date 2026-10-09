@@ -31,7 +31,8 @@ if [[ -d "$SCRIPT_DIR/venv" ]]; then
 fi
 
 export PORT HOST
-python3 "$SCRIPT_DIR/main.py" > "$LOGFILE" 2>&1 &
+printf '\n--- Backend start %s ---\n' "$(date -Is)" >> "$LOGFILE"
+python3 -u "$SCRIPT_DIR/main.py" >> "$LOGFILE" 2>&1 &
 PID="$!"
 echo "$PID" > "$PIDFILE"
 
